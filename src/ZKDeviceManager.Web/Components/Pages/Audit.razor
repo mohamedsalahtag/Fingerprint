@@ -1,0 +1,57 @@
+@page "/audit"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Audit</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Audit Log</h1>
+    <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync"><span class="bi bi-arrow-clockwise"></span> Refresh</button>
+</div>
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-md-3"><label class="form-label mb-0 small">Search user / action</label>
+        <input class="form-control form-control-sm" @bind="_filter" @bind:event="oninput" @bind:after="LoadAsync" /></div>
+</div>
+
+@if (_rows is null) { <p><em>Loading…</em></p> }
+else if (_rows.Count == 0) { <div class="alert alert-info">No audit entries yet.</div> }
+else
+{
+    <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+            <thead><tr><th>When</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
+            <tbody>
+                @foreach (var a in _rows)
+                {
+                    <tr>
+                        <td class="text-nowrap small">@a.WhenUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td class="fw-semibold">@a.User</td>
+                        <td>@a.Action</td>
+                        <td class="small">@(a.Detail ?? "—")</td>
+                        <td class="small text-muted">@(a.Ip ?? "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<AuditLog>? _rows;
+    private string _filter = "";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        IQueryable<AuditLog> q = db.AuditLogs;
+        if (!string.IsNullOrWhiteSpace(_filter))
+        {
+            var f = _filter.Trim();
+            q = q.Where(a => a.User.Contains(f) || a.Action.Contains(f) || (a.Detail != null && a.Detail.Contains(f)));
+        }
+        _rows = await q.OrderByDescending(a => a.WhenUtc).Take(500).ToListAsync();
+    }
+}

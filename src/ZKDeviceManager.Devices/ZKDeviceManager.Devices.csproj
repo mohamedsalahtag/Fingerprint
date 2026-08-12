@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- zkemkeeper is an out-of-process/in-process COM server; embed no interop types
+         so the runtime binds against the registered COM class at activation time. -->
+    <EnableComHosting>false</EnableComHosting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ZKDeviceManager.Data\ZKDeviceManager.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Prebuilt tlbimp interop for the ZKTeco zkemkeeper COM SDK (x64).
+         The real COM class is activated at runtime from the regsvr32-registered
+         zkemkeeper.dll; this assembly only supplies the managed type metadata. -->
+    <Reference Include="Interop.zkemkeeper">
+      <HintPath>..\..\libs\Interop.zkemkeeper.dll</HintPath>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>

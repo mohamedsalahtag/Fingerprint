@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ZKDeviceManager.Data/ZKDeviceManager.Data.csproj" />
+    <Project Path="src/ZKDeviceManager.Devices/ZKDeviceManager.Devices.csproj" />
+    <Project Path="src/ZKDeviceManager.Web/ZKDeviceManager.Web.csproj" />
+  </Folder>
+</Solution>

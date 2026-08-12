@@ -1,0 +1,318 @@
+@page "/devices"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject StaExecutor Sta
+@inject IZkDeviceService Zk
+@inject JobService Jobs
+@inject NavigationManager Nav
+@implements IDisposable
+@inject IJobNotifier Notifier
+
+<PageTitle>Devices</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Devices</h1>
+    <button class="btn btn-primary" @onclick="() => OpenEditor(null)">
+        <span class="bi bi-plus-lg"></span> Add device
+    </button>
+</div>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-@_flashKind alert-dismissible" role="alert">
+        @_flash
+        <button type="button" class="btn-close" @onclick="() => _flash = null"></button>
+    </div>
+}
+
+@if (_devices is null)
+{
+    <p><em>Loading…</em></p>
+}
+else if (_devices.Count == 0)
+{
+    <div class="alert alert-info">No devices yet. Click <strong>Add device</strong> to register one.</div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+                <tr>
+                    <th>Name</th><th>IP : Port</th><th>Serial</th>
+                    <th title="TCP reachability on port 4370">Live</th>
+                    <th title="Connected via PUSH/ADMS">PUSH</th>
+                    <th class="text-end" title="Users stored in this app">Users</th>
+                    <th class="text-end" title="Users that have at least one face template">Faces</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var d in _devices)
+                {
+                    var stats = _stats.GetValueOrDefault(d.Id);
+                    var push = PushSeen(d);
+                    <tr style="cursor:pointer" @onclick="() => OpenDetails(d.Id)">
+                        <td class="fw-semibold">@d.Name</td>
+                        <td>@d.IpAddress : @d.Port</td>
+                        <td>@(d.SerialNumber ?? "—")</td>
+                        <td>
+                            @if (_status.TryGetValue(d.Id, out var st))
+                            {
+                                <span class="badge bg-@(st.Ok ? "success" : "danger")">@(st.Ok ? "Online" : "Offline")</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-secondary">…</span>
+                            }
+                        </td>
+                        <td>
+                            @if (push is null)
+                            {
+                                <span class="badge bg-warning text-dark" title="Never connected via PUSH">not set up</span>
+                            }
+                            else if ((DateTime.UtcNow - push.Value).TotalSeconds < 60)
+                            {
+                                <span class="badge bg-success" title="@push.Value.ToLocalTime().ToString("g")">online</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-secondary" title="@push.Value.ToLocalTime().ToString("g")">idle</span>
+                            }
+                        </td>
+                        <td class="text-end">@stats.Users</td>
+                        <td class="text-end">@stats.UsersWithFaces</td>
+                        <td class="text-end text-nowrap">
+                            <button class="btn btn-sm btn-outline-secondary" title="Test connection"
+                                    disabled="@_busy" @onclick="() => TestAsync(d)" @onclick:stopPropagation="true">
+                                <span class="bi bi-plug"></span>
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" title="Edit device"
+                                    @onclick="() => OpenEditor(d)" @onclick:stopPropagation="true">
+                                <span class="bi bi-pencil"></span>
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" title="Delete device"
+                                    @onclick="() => DeleteAsync(d)" @onclick:stopPropagation="true">
+                                <span class="bi bi-trash"></span>
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (_editing is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <EditForm Model="_editing" OnValidSubmit="SaveAsync">
+                    <DataAnnotationsValidator />
+                    <div class="modal-header">
+                        <h5 class="modal-title">@(_editing.Id == 0 ? "Add device" : "Edit device")</h5>
+                        <button type="button" class="btn-close" @onclick="() => _editing = null"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-2">
+                            <label class="form-label">Name</label>
+                            <InputText class="form-control" @bind-Value="_editing.Name" />
+                            <ValidationMessage For="() => _editing.Name" />
+                        </div>
+                        <div class="row">
+                            <div class="col-8 mb-2">
+                                <label class="form-label">IP address</label>
+                                <InputText class="form-control" @bind-Value="_editing.IpAddress" />
+                                <ValidationMessage For="() => _editing.IpAddress" />
+                            </div>
+                            <div class="col-4 mb-2">
+                                <label class="form-label">Port</label>
+                                <InputNumber class="form-control" @bind-Value="_editing.Port" />
+                            </div>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Comm key (communication password)</label>
+                            <InputNumber class="form-control" @bind-Value="_editing.CommKey" />
+                            <div class="form-text">
+                                The device's communication key / password (a number, e.g. 0–999999).
+                                Use <strong>0</strong> if the terminal has no comm password. This must match the
+                                value set on the device (Menu → Comm → Security / Comm Key), otherwise the
+                                connection is rejected as unauthorized.
+                            </div>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">Location</label>
+                            <InputText class="form-control" @bind-Value="_editing.Location" />
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" @onclick="() => _editing = null">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save</button>
+                    </div>
+                </EditForm>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<Device>? _devices;
+    private Device? _editing;
+    private readonly Dictionary<int, (bool Ok, string? Msg)> _status = new();
+    private Dictionary<int, DeviceStats> _stats = new();
+    private Dictionary<string, DateTime> _push = new();
+    private bool _busy;
+    private string? _flash;
+    private string _flashKind = "info";
+    private System.Threading.Timer? _statusTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Notifier.JobChanged += OnJobChanged;
+        await LoadAsync();
+        _ = CheckStatusesAsync();                              // first live check
+        _statusTimer = new System.Threading.Timer(_ => _ = RefreshAsync(),
+            null, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(20)); // then every 20s
+    }
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _devices = await db.Devices.OrderBy(d => d.Name).ToListAsync();
+        _stats = await DeviceStatsQuery.ForAllAsync(db);
+        _push = await db.PushDevices.ToDictionaryAsync(p => p.SerialNumber, p => p.LastSeenUtc);
+    }
+
+    private async Task RefreshAsync()
+    {
+        await LoadAsync();
+        await CheckStatusesAsync();
+    }
+
+    private DateTime? PushSeen(Device d) =>
+        !string.IsNullOrEmpty(d.SerialNumber) && _push.TryGetValue(d.SerialNumber, out var t) ? t : null;
+
+    // Live status: quick TCP connect to the device's port (no SDK), refreshed on a timer.
+    private async Task CheckStatusesAsync()
+    {
+        var devices = _devices;
+        if (devices is null) return;
+        await Task.WhenAll(devices.Select(async d =>
+        {
+            var ok = await TcpReachableAsync(d.IpAddress, d.Port, 2000);
+            _status[d.Id] = (ok, ok ? null : "unreachable");
+        }));
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static async Task<bool> TcpReachableAsync(string ip, int port, int timeoutMs)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var connect = client.ConnectAsync(ip, port);
+            var done = await Task.WhenAny(connect, Task.Delay(timeoutMs));
+            return done == connect && !connect.IsFaulted && client.Connected;
+        }
+        catch { return false; }
+    }
+
+    private void OpenDetails(int id) => Nav.NavigateTo($"devices/{id}");
+
+    private void OpenEditor(Device? d)
+    {
+        _editing = d is null
+            ? new Device { Port = 4370 }
+            : new Device
+            {
+                Id = d.Id, Name = d.Name, IpAddress = d.IpAddress, Port = d.Port,
+                CommKey = d.CommKey, Location = d.Location
+            };
+    }
+
+    private async Task SaveAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        if (_editing!.Id == 0)
+        {
+            db.Devices.Add(_editing);
+        }
+        else
+        {
+            var existing = await db.Devices.FirstAsync(x => x.Id == _editing.Id);
+            existing.Name = _editing.Name;
+            existing.IpAddress = _editing.IpAddress;
+            existing.Port = _editing.Port;
+            existing.CommKey = _editing.CommKey;
+            existing.Location = _editing.Location;
+        }
+        try
+        {
+            await db.SaveChangesAsync();
+            Flash("Device saved.", "success");
+        }
+        catch (DbUpdateException)
+        {
+            Flash("A device with that IP and port already exists.", "danger");
+        }
+        _editing = null;
+        await LoadAsync();
+    }
+
+    private async Task DeleteAsync(Device d)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        db.Devices.Remove(await db.Devices.FirstAsync(x => x.Id == d.Id));
+        await db.SaveChangesAsync();
+        Flash($"Deleted {d.Name}.", "success");
+        await LoadAsync();
+    }
+
+    private async Task TestAsync(Device d)
+    {
+        _busy = true;
+        try
+        {
+            var conn = new DeviceConnection(d.IpAddress, d.Port, d.CommKey);
+            var (ok, err) = await Sta.RunAsync(() =>
+            {
+                var r = Zk.TestConnection(conn, out var e);
+                return (r, e);
+            });
+            _status[d.Id] = (ok, err);
+            Flash(ok ? $"{d.Name} is reachable." : $"{d.Name}: {err}", ok ? "success" : "danger");
+
+            if (ok)
+            {
+                await using var db = DbFactory.CreateDbContext();
+                var row = await db.Devices.FirstAsync(x => x.Id == d.Id);
+                row.LastSeenUtc = DateTime.UtcNow;
+                await db.SaveChangesAsync();
+            }
+        }
+        finally { _busy = false; }
+    }
+
+    private System.Threading.Timer? _flashTimer;
+    private void Flash(string msg, string kind)
+    {
+        _flash = msg; _flashKind = kind;
+        _flashTimer?.Dispose();
+        if (kind == "success")
+            _flashTimer = new System.Threading.Timer(_ => InvokeAsync(() => { _flash = null; StateHasChanged(); }),
+                null, 4000, System.Threading.Timeout.Infinite);
+    }
+
+    private async void OnJobChanged(int jobId)
+    {
+        await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Notifier.JobChanged -= OnJobChanged;
+        _statusTimer?.Dispose();
+        _flashTimer?.Dispose();
+    }
+}

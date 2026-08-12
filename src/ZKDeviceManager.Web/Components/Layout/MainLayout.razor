@@ -1,0 +1,63 @@
+﻿@inherits LayoutComponentBase
+@inject IConfiguration Config
+
+<div class="page">
+    <div class="sidebar">
+        <NavMenu />
+    </div>
+
+    <main>
+        <div class="top-row px-4 justify-content-end gap-3">
+            @if (Config.GetValue("Auth:Enabled", false))
+            {
+                <form method="post" action="/auth/logout" class="m-0">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary"><span class="bi bi-box-arrow-right"></span> Sign out</button>
+                </form>
+            }
+            <a href="#" @onclick="() => _showAbout = true" @onclick:preventDefault="true">About</a>
+        </div>
+
+        <article class="content px-4">
+            @Body
+        </article>
+    </main>
+</div>
+
+@if (_showAbout)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><span class="bi bi-hdd-network"></span> ZK Device Manager</h5>
+                    <button type="button" class="btn-close" @onclick="() => _showAbout = false"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-1"><strong>ZK Device Manager</strong> <span class="text-muted">v1.0</span></p>
+                    <p class="small text-muted">Attendance &amp; biometric‑terminal management for Sharbatly Fruit —
+                        devices, employees, enrollment, attendance reporting, backups and automation.</p>
+                    <dl class="row small mb-0">
+                        <dt class="col-4">Created by</dt><dd class="col-8">Mohamed Tag — IT Management</dd>
+                        <dt class="col-4">Organization</dt><dd class="col-8">Sharbatly Fruit</dd>
+                        <dt class="col-4">Platform</dt><dd class="col-8">ASP.NET Core Blazor (.NET 10), SQL Server</dd>
+                        <dt class="col-4">Devices</dt><dd class="col-8">ZKTeco terminals via PUSH/ADMS &amp; SDK</dd>
+                        <dt class="col-4">Sign‑in</dt><dd class="col-8">Active Directory (sharbatlyfruit.com)</dd>
+                    </dl>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" @onclick="() => _showAbout = false">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool _showAbout;
+}
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

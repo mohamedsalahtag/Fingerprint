@@ -1,0 +1,97 @@
+.navbar-toggler {
+    appearance: none;
+    cursor: pointer;
+    width: 3.5rem;
+    height: 2.5rem;
+    color: white;
+    position: absolute;
+    top: 0.5rem;
+    right: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%28255, 255, 255, 0.55%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e") no-repeat center/1.75rem rgba(255, 255, 255, 0.1);
+}
+
+.navbar-toggler:checked {
+    background-color: rgba(255, 255, 255, 0.5);
+}
+
+.top-row {
+    min-height: 3.5rem;
+    background-color: rgba(0,0,0,0.22);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.navbar-brand {
+    font-size: 1.05rem;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.nav-section {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #8ca0b3;
+    padding: 0.85rem 1.1rem 0.2rem;
+    margin-top: 0.15rem;
+}
+
+.nav-scrollable ::deep .nav-link {
+    color: #ecf0f1;
+    padding: 0.4rem 1.1rem;
+    font-size: 0.885rem;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    line-height: 1.4;
+    border-radius: 0;
+    border-left: 3px solid transparent;
+    transition: background-color .12s ease, color .12s ease;
+}
+
+    .nav-scrollable ::deep .nav-link .bi {
+        font-size: 1rem;
+        width: 1.15rem;
+        text-align: center;
+        color: #bdc9d4;
+    }
+
+    .nav-scrollable ::deep .nav-link:hover {
+        background-color: #34495e;
+        color: #ffffff;
+    }
+
+        .nav-scrollable ::deep .nav-link:hover .bi {
+            color: #ffffff;
+        }
+
+    .nav-scrollable ::deep a.active {
+        background-color: #34495e;
+        color: #ffffff;
+        font-weight: 600;
+        border-left-color: #3498db;
+    }
+
+        .nav-scrollable ::deep a.active .bi {
+            color: #5dade2;
+        }
+
+.nav-scrollable {
+    display: none;
+}
+
+.navbar-toggler:checked ~ .nav-scrollable {
+    display: block;
+}
+
+@media (min-width: 641px) {
+    .navbar-toggler {
+        display: none;
+    }
+
+    .nav-scrollable {
+        display: block;
+        height: calc(100vh - 3.5rem);
+        overflow-y: auto;
+    }
+}

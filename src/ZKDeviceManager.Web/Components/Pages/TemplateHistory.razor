@@ -1,0 +1,71 @@
+@page "/template-history"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Template History</PageTitle>
+
+<h1 class="h3 mb-1">Template Change History</h1>
+<p class="text-muted small">Every time a stored fingerprint/face is replaced by a genuinely different one (re-enrollment),
+   the previous version is archived here. Routine re-syncs of identical data are not recorded.</p>
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-md-3"><label class="form-label mb-0 small">Search user id / name</label>
+        <input class="form-control form-control-sm" @bind="_filter" @bind:event="oninput" @bind:after="LoadAsync" /></div>
+    <div class="col-md-3"><label class="form-label mb-0 small">Type</label>
+        <select class="form-select form-select-sm" @bind="_type" @bind:after="LoadAsync">
+            <option value="all">All</option><option value="0">Fingerprint</option><option value="1">Face</option>
+        </select></div>
+</div>
+
+@if (_rows is null) { <p><em>Loading…</em></p> }
+else if (_rows.Count == 0) { <div class="alert alert-info">No template changes recorded yet.</div> }
+else
+{
+    <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+            <thead><tr><th>When</th><th>User id</th><th>Name</th><th>Device</th><th>Type</th><th>Index</th><th class="text-end">Prev length</th></tr></thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td class="text-nowrap small">@r.ChangedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>@r.Pin</td>
+                        <td class="fw-semibold">@_names.GetValueOrDefault(r.Pin, "—")</td>
+                        <td class="small">@_devNames.GetValueOrDefault(r.DeviceId, r.DeviceId.ToString())</td>
+                        <td>@(r.Type == TemplateType.Face ? "Face" : "Fingerprint")</td>
+                        <td>@r.FingerIndex</td>
+                        <td class="text-end">@r.OldLength</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<TemplateChange>? _rows;
+    private Dictionary<string, string> _names = new();
+    private Dictionary<int, string> _devNames = new();
+    private string _filter = "";
+    private string _type = "all";
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _names = await UserDirectory.BestNamesAsync(db);
+        _devNames = await db.Devices.ToDictionaryAsync(d => d.Id, d => d.Name);
+
+        IQueryable<TemplateChange> q = db.TemplateChanges;
+        if (_type == "0") q = q.Where(t => t.Type == TemplateType.Fingerprint);
+        else if (_type == "1") q = q.Where(t => t.Type == TemplateType.Face);
+        if (!string.IsNullOrWhiteSpace(_filter))
+        {
+            var f = _filter.Trim();
+            var pins = _names.Where(kv => kv.Value.Contains(f, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList();
+            q = q.Where(t => t.Pin.Contains(f) || pins.Contains(t.Pin));
+        }
+        _rows = await q.OrderByDescending(t => t.ChangedUtc).Take(500).ToListAsync();
+    }
+}

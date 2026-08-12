@@ -1,0 +1,341 @@
+@page "/devices/{Id:int}"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject StaExecutor Sta
+@inject IZkDeviceService Zk
+@inject JobService Jobs
+@inject IJobNotifier Notifier
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Device details</PageTitle>
+
+@if (_device is null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h3 mb-0">@_device.Name</h1>
+        <a class="btn btn-outline-secondary" href="devices">← Back to devices</a>
+    </div>
+
+    @if (_flash is not null)
+    {
+        <div class="alert alert-@_flashKind alert-dismissible">
+            @_flash
+            <button type="button" class="btn-close" @onclick="() => _flash = null"></button>
+        </div>
+    }
+
+    <div class="row g-3">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>Connection</span>
+                    <span>
+                        @if (_pushOnline)
+                        {
+                            <span class="badge bg-success" title="Connected via PUSH/ADMS in the last minute">PUSH online</span>
+                        }
+                        else if (_pushSeen is not null)
+                        {
+                            <span class="badge bg-secondary" title="Last PUSH contact">PUSH idle</span>
+                        }
+                        else
+                        {
+                            <span class="badge bg-warning text-dark" title="This terminal has never connected via PUSH">PUSH not set up</span>
+                        }
+                    </span>
+                </div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-5">IP : Port</dt><dd class="col-7">@_device.IpAddress : @_device.Port</dd>
+                        <dt class="col-5">Serial</dt><dd class="col-7">@(_device.SerialNumber ?? "—")</dd>
+                        <dt class="col-5">Firmware</dt><dd class="col-7">@(_device.FirmwareVersion ?? "—")</dd>
+                        <dt class="col-5">Location</dt><dd class="col-7">@(_device.Location ?? "—")</dd>
+                        <dt class="col-5">Last PUSH</dt><dd class="col-7">@(_pushSeen?.ToLocalTime().ToString("g") ?? "never")</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Stored in this app <small class="text-muted">(from the database)</small></div>
+                <div class="card-body">
+                    <div class="d-flex flex-wrap gap-2">
+                        <span class="badge text-bg-primary fs-6">@_stats.Users users</span>
+                        <span class="badge text-bg-success fs-6">@_stats.UsersWithFaces with faces</span>
+                        <span class="badge text-bg-info fs-6">@_stats.UsersWithFingerprints with fingerprints</span>
+                        <span class="badge text-bg-secondary fs-6">@_stats.UsersWithCards with cards</span>
+                        <span class="badge text-bg-light border fs-6">@_stats.Logs logs</span>
+                    </div>
+                    <div class="small text-muted mt-2">
+                        @_stats.FingerprintTemplates fingerprint templates · @_stats.FaceTemplates face templates
+                    </div>
+                    <div class="mt-3 d-flex gap-2">
+                        <a class="btn btn-outline-secondary btn-sm" href="@($"data?device={_device.Id}")">
+                            <span class="bi bi-people"></span> User Templates
+                        </a>
+                        <a class="btn btn-outline-secondary btn-sm" href="@($"attendance")">
+                            <span class="bi bi-clock-history"></span> Attendance
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (!_pushOnline && _pushSeen is null)
+    {
+        <div class="alert alert-warning mt-3 mb-0 small">
+            <span class="bi bi-exclamation-triangle"></span>
+            This terminal has not connected to this app via PUSH/ADMS yet, so <strong>Sync data</strong>,
+            <strong>Copy</strong> and <strong>attendance</strong> won't work until it does. On the device:
+            <em>Menu → Comm → Cloud Server / ADMS</em> → set the Server Address to this app's host IP and the
+            Server Port to this app's port (Enable Domain Name = OFF).
+        </div>
+    }
+
+    <div class="card mt-3">
+        <div class="card-header">Data <small class="text-muted">(over PUSH/ADMS — tracked on the Jobs page)</small></div>
+        <div class="card-body d-flex flex-wrap gap-2 align-items-center">
+            <button class="btn btn-primary" @onclick="SyncDataAsync">
+                <span class="bi bi-cloud-download"></span> Sync data (users, fingerprints, faces)
+            </button>
+            <button class="btn btn-outline-primary" @onclick="SyncLogsAsync">
+                <span class="bi bi-clock-history"></span> Download attendance logs
+            </button>
+
+            <div class="vr d-none d-md-block mx-1"></div>
+
+            <div class="input-group" style="max-width:26rem">
+                <span class="input-group-text">Copy from</span>
+                <select class="form-select" @bind="_copySourceId">
+                    <option value="0">— source device —</option>
+                    @foreach (var s in _sources.Where(s => s.Id != _device.Id))
+                    {
+                        <option value="@s.Id">@s.Name</option>
+                    }
+                </select>
+                <button class="btn btn-outline-primary" disabled="@(_copySourceId == 0)" @onclick="CopyFromAsync">
+                    <span class="bi bi-box-arrow-in-right"></span> Copy onto this device
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mt-3">
+        <div class="card-header">Live info &amp; control <small class="text-muted">(over the SDK on port @_device.Port)</small></div>
+        <div class="card-body">
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-outline-secondary" disabled="@_busy" @onclick="ReadInfoAsync">
+                    <span class="bi bi-arrow-clockwise"></span> Read live info
+                </button>
+                <button class="btn btn-outline-secondary" disabled="@_busy" @onclick="TestAsync">
+                    <span class="bi bi-plug"></span> Test connection
+                </button>
+                <button class="btn btn-outline-secondary" @onclick="() => Control(SyncJobType.ControlSyncTime, null)">
+                    <span class="bi bi-clock"></span> Sync time
+                </button>
+                <button class="btn btn-outline-warning" @onclick="() => Control(SyncJobType.ControlDisableUi, null)">Disable UI</button>
+                <button class="btn btn-outline-warning" @onclick="() => Control(SyncJobType.ControlEnableUi, null)">Enable UI</button>
+                <button class="btn btn-outline-danger" @onclick="() => Control(SyncJobType.ControlRestart, null)">
+                    <span class="bi bi-arrow-clockwise"></span> Restart
+                </button>
+                <button class="btn btn-outline-danger" @onclick="() => Control(SyncJobType.ControlPowerOff, null)">
+                    <span class="bi bi-power"></span> Power off
+                </button>
+                <button class="btn btn-danger" @onclick="() => _confirmClear = true">
+                    <span class="bi bi-trash"></span> Delete all users
+                </button>
+            </div>
+
+            @if (_busy)
+            {
+                <p class="mb-0"><span class="spinner-border spinner-border-sm"></span> Contacting device…</p>
+            }
+            else if (_info is not null)
+            {
+                <dl class="row mb-0">
+                    <dt class="col-sm-3">Serial</dt><dd class="col-sm-3">@_info.SerialNumber</dd>
+                    <dt class="col-sm-3">Firmware</dt><dd class="col-sm-3">@_info.FirmwareVersion</dd>
+                    <dt class="col-sm-3">Users on device</dt><dd class="col-sm-3">@_info.UserCount / @_info.UserCapacity</dd>
+                    <dt class="col-sm-3">Fingerprints on device</dt><dd class="col-sm-3">@_info.FingerprintCount / @_info.FingerprintCapacity</dd>
+                    <dt class="col-sm-3">Faces on device</dt><dd class="col-sm-3">@_info.FaceCount / @_info.FaceCapacity</dd>
+                    <dt class="col-sm-3">Att. records on device</dt><dd class="col-sm-3">@_info.RecordCount</dd>
+                </dl>
+                <p class="small text-muted mt-2 mb-0">These are the terminal's own live totals. The badges above
+                    are what this app has stored — run <strong>Sync data</strong> to bring them together.</p>
+            }
+        </div>
+    </div>
+
+    @if (_confirmClear)
+    {
+        <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+            <div class="modal-dialog">
+                <div class="modal-content border-danger">
+                    <div class="modal-header bg-danger text-white">
+                        <h5 class="modal-title"><span class="bi bi-exclamation-triangle-fill"></span> Delete all users?</h5>
+                        <button type="button" class="btn-close btn-close-white" @onclick="() => _confirmClear = false"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>This permanently removes <strong>every user and all their fingerprints, faces and cards</strong>
+                           from the terminal <strong>@_device.Name</strong> (@_device.IpAddress).</p>
+                        <p class="mb-2">It also removes this device's <strong>stored users from this app</strong> so the
+                           counts stay accurate. <strong>Attendance history is kept.</strong> Users also enrolled on
+                           another machine still have their templates there.</p>
+                        <p class="text-danger mb-0"><strong>This runs on the device and cannot be undone.</strong>
+                           If unsure, copy this device's users to another machine first.</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" @onclick="() => _confirmClear = false">Cancel</button>
+                        <button type="button" class="btn btn-danger" @onclick="() => Control(SyncJobType.ControlClearUsers, () => _confirmClear = false)">
+                            <span class="bi bi-trash"></span> Yes, delete all users
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private Device? _device;
+    private DeviceInfo? _info;
+    private DeviceStats _stats = DeviceStats.Empty;
+    private DateTime? _pushSeen;
+    private bool _pushOnline;
+    private List<Device> _sources = new();
+    private int _copySourceId;
+    private bool _busy;
+    private bool _confirmClear;
+    private string? _flash;
+    private string _flashKind = "info";
+
+    protected override void OnInitialized() => Notifier.JobChanged += OnJobChanged;
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _device = await db.Devices.FirstOrDefaultAsync(d => d.Id == Id);
+        if (_device is null) return;
+
+        _stats = await DeviceStatsQuery.ForDeviceAsync(db, Id);
+        _sources = await db.Devices
+            .Where(d => db.EnrolledUsers.Any(u => u.SourceDeviceId == d.Id))
+            .OrderBy(d => d.Name).ToListAsync();
+
+        _pushSeen = null; _pushOnline = false;
+        if (!string.IsNullOrEmpty(_device.SerialNumber))
+        {
+            var pd = await db.PushDevices.FirstOrDefaultAsync(p => p.SerialNumber == _device.SerialNumber);
+            if (pd is not null)
+            {
+                _pushSeen = pd.LastSeenUtc;
+                _pushOnline = (DateTime.UtcNow - pd.LastSeenUtc).TotalSeconds < 60;
+            }
+        }
+    }
+
+    private DeviceConnection Conn() => new(_device!.IpAddress, _device.Port, _device.CommKey);
+
+    // ---- PUSH data jobs ----
+    private async Task SyncDataAsync()
+    {
+        var id = await Jobs.QueueSyncDownloadAsync(Id);
+        Flash($"Sync queued (job #{id}). Follow it on the Jobs page; badges update as data arrives.", "info");
+    }
+
+    private async Task SyncLogsAsync()
+    {
+        var id = await Jobs.QueueSyncDownloadLogsAsync(Id);
+        Flash($"Attendance download queued (job #{id}). Track it on the Jobs page.", "info");
+    }
+
+    private async Task CopyFromAsync()
+    {
+        if (_copySourceId == 0) return;
+        var id = await Jobs.QueueSyncCopyAsync(_copySourceId, Id);
+        Flash($"Copy queued (job #{id}). The source's stored users, fingerprints and faces are being " +
+              "sent to this terminal — follow it on the Jobs page.", "success");
+    }
+
+    // ---- SDK control jobs ----
+    private async Task Control(SyncJobType type, Action? after)
+    {
+        after?.Invoke();
+        var id = await Jobs.QueueControlAsync(Id, type);
+        Flash($"{Label(type)} queued (job #{id}). Track it on the Jobs page.", "info");
+    }
+
+    private static string Label(SyncJobType t) => t switch
+    {
+        SyncJobType.ControlSyncTime => "Sync time",
+        SyncJobType.ControlEnableUi => "Enable UI",
+        SyncJobType.ControlDisableUi => "Disable UI",
+        SyncJobType.ControlRestart => "Restart",
+        SyncJobType.ControlPowerOff => "Power off",
+        SyncJobType.ControlClearUsers => "Delete all users",
+        _ => t.ToString()
+    };
+
+    // ---- Immediate SDK reads ----
+    private async Task ReadInfoAsync()
+    {
+        _busy = true; _flash = null;
+        try
+        {
+            _info = await Sta.RunAsync(() => Zk.ReadDeviceInfo(Conn()));
+            await using var db = DbFactory.CreateDbContext();
+            var row = await db.Devices.FirstAsync(d => d.Id == Id);
+            row.SerialNumber = _info.SerialNumber ?? row.SerialNumber;
+            row.FirmwareVersion = _info.FirmwareVersion ?? row.FirmwareVersion;
+            row.Platform = _info.Platform ?? row.Platform;
+            row.Model = _info.ProductCode ?? row.Model;
+            row.LastSeenUtc = DateTime.UtcNow;
+            row.LastInfoUtc = DateTime.UtcNow;
+            row.DevUserCount = _info.UserCount; row.DevUserCapacity = _info.UserCapacity;
+            row.DevFpCount = _info.FingerprintCount; row.DevFpCapacity = _info.FingerprintCapacity;
+            row.DevFaceCount = _info.FaceCount; row.DevFaceCapacity = _info.FaceCapacity;
+            row.DevLogCount = _info.RecordCount;
+            await db.SaveChangesAsync();
+            await LoadAsync();
+        }
+        catch (Exception ex) { Flash(ex.Message, "danger"); }
+        finally { _busy = false; }
+    }
+
+    private async Task TestAsync()
+    {
+        _busy = true; _flash = null;
+        try
+        {
+            var (ok, err) = await Sta.RunAsync(() => { var r = Zk.TestConnection(Conn(), out var e); return (r, e); });
+            Flash(ok ? $"{_device!.Name} is reachable." : $"{_device!.Name}: {err}", ok ? "success" : "danger");
+        }
+        finally { _busy = false; }
+    }
+
+    private System.Threading.Timer? _flashTimer;
+    private void Flash(string msg, string kind)
+    {
+        _flash = msg; _flashKind = kind;
+        _flashTimer?.Dispose();
+        if (kind == "success")
+            _flashTimer = new System.Threading.Timer(_ => InvokeAsync(() => { _flash = null; StateHasChanged(); }),
+                null, 4000, System.Threading.Timeout.Infinite);
+    }
+
+    private async void OnJobChanged(int jobId)
+        => await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+
+    public void Dispose() { Notifier.JobChanged -= OnJobChanged; _flashTimer?.Dispose(); }
+}

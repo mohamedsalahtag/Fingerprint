@@ -1,0 +1,79 @@
+@page "/holidays"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Holidays</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Holidays</h1>
+</div>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-success alert-dismissible">@_flash <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
+}
+
+<div class="card mb-3" style="max-width:480px">
+    <div class="card-body py-2">
+        <div class="row g-2 align-items-end">
+            <div class="col-5"><label class="form-label small mb-0">Date</label>
+                <input type="date" class="form-control form-control-sm" @bind="_newDate" /></div>
+            <div class="col-5"><label class="form-label small mb-0">Name</label>
+                <input class="form-control form-control-sm" @bind="_newName" /></div>
+            <div class="col-2"><button class="btn btn-primary btn-sm w-100" disabled="@string.IsNullOrWhiteSpace(_newName)" @onclick="AddAsync">Add</button></div>
+        </div>
+    </div>
+</div>
+
+@if (_items is null) { <p><em>Loading…</em></p> }
+else
+{
+    <table class="table table-sm table-hover align-middle" style="max-width:480px">
+        <thead><tr><th>Date</th><th>Day</th><th>Name</th><th class="text-end"></th></tr></thead>
+        <tbody>
+            @foreach (var h in _items)
+            {
+                <tr>
+                    <td>@h.Date.ToString("yyyy-MM-dd")</td>
+                    <td class="small text-muted">@h.Date.DayOfWeek</td>
+                    <td class="fw-semibold">@h.Name</td>
+                    <td class="text-end"><button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(h)"><span class="bi bi-trash"></span></button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<Holiday>? _items;
+    private DateTime _newDate = DateTime.Today;
+    private string _newName = "";
+    private string? _flash;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _items = await db.Holidays.OrderByDescending(h => h.Date).ToListAsync();
+    }
+
+    private async Task AddAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var date = DateOnly.FromDateTime(_newDate);
+        if (!await db.Holidays.AnyAsync(h => h.Date == date))
+            db.Holidays.Add(new Holiday { Date = date, Name = _newName.Trim() });
+        await db.SaveChangesAsync();
+        _flash = "Holiday added."; _newName = "";
+        await LoadAsync();
+    }
+
+    private async Task DeleteAsync(Holiday h)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        db.Holidays.Remove(await db.Holidays.FirstAsync(x => x.Id == h.Id));
+        await db.SaveChangesAsync();
+        await LoadAsync();
+    }
+}

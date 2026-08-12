@@ -1,0 +1,123 @@
+@page "/coverage"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Enrollment Coverage</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h1 class="h3 mb-0">Enrollment Coverage</h1>
+    <a class="btn btn-outline-success btn-sm" href="/export/coverage"><span class="bi bi-file-earmark-excel"></span> Excel</a>
+</div>
+<p class="text-muted small">Who has fingerprints / faces / cards, on how many machines — and who has gaps.</p>
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-md-3"><label class="form-label mb-0 small">Search id / name</label>
+        <input class="form-control form-control-sm" @bind="_filter" @bind:event="oninput" /></div>
+    <div class="col-md-3"><label class="form-label mb-0 small">Department</label>
+        <select class="form-select form-select-sm" @bind="_dept">
+            <option value="0">All</option>
+            @foreach (var d in _depts) { <option value="@d.Id">@d.Name</option> }
+        </select></div>
+    <div class="col-md-3"><label class="form-label mb-0 small">Show</label>
+        <select class="form-select form-select-sm" @bind="_show">
+            <option value="all">Everyone</option>
+            <option value="gaps">Gaps only (no biometric)</option>
+            <option value="noface">Missing face</option>
+            <option value="nofinger">Missing fingerprint</option>
+        </select></div>
+</div>
+
+@if (_rows is null) { <p><em>Loading…</em></p> }
+else
+{
+    <p class="text-muted small">@Filtered.Count() of @_rows.Count</p>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle">
+            <thead><tr><th>User id</th><th>Name</th><th>Department</th><th class="text-center">Machines</th>
+                <th class="text-center">Fingerprint</th><th class="text-center">Face</th><th class="text-center">Card</th><th>Status</th></tr></thead>
+            <tbody>
+                @foreach (var r in Filtered)
+                {
+                    var gap = !r.HasFinger && !r.HasFace;
+                    <tr class="@(gap ? "table-danger" : null)">
+                        <td class="fw-semibold">@r.Pin</td>
+                        <td>@r.Name</td>
+                        <td>@r.Department</td>
+                        <td class="text-center">@r.Devices</td>
+                        <td class="text-center">@(r.HasFinger ? "✔" : "—")</td>
+                        <td class="text-center">@(r.HasFace ? "✔" : "—")</td>
+                        <td class="text-center">@(r.HasCard ? "✔" : "—")</td>
+                        <td>@((MarkupString)StatusBadge(r))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private record Row(string Pin, string Name, string Department, int Devices, bool HasFinger, bool HasFace, bool HasCard);
+
+    private List<Row>? _rows;
+    private List<Department> _depts = new();
+    private string _filter = "";
+    private int _dept;
+    private string _show = "all";
+    private HashSet<string> _deptPins = new();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _depts = await db.Departments.OrderBy(d => d.Name).ToListAsync();
+        var names = await UserDirectory.BestNamesAsync(db);
+        var emps = await db.Employees.Select(e => new { e.Pin, e.DepartmentId }).ToListAsync();
+        var deptById = _depts.ToDictionary(d => d.Id, d => d.Name);
+        var empDept = emps.Where(e => e.DepartmentId != null).ToDictionary(e => e.Pin, e => e.DepartmentId!.Value);
+
+        var raw = await db.EnrolledUsers.Select(u => new
+        {
+            u.DeviceUserId, u.SourceDeviceId,
+            HasCard = u.CardNumber != null && u.CardNumber != "",
+            HasFinger = u.Templates.Any(t => t.Type == TemplateType.Fingerprint),
+            HasFace = u.Templates.Any(t => t.Type == TemplateType.Face)
+        }).ToListAsync();
+
+        _rows = raw.GroupBy(x => x.DeviceUserId).Select(g => new Row(
+            g.Key,
+            names.GetValueOrDefault(g.Key, g.Key),
+            empDept.TryGetValue(g.Key, out var did) ? deptById.GetValueOrDefault(did, "—") : "—",
+            g.Select(x => x.SourceDeviceId).Distinct().Count(),
+            g.Any(x => x.HasFinger), g.Any(x => x.HasFace), g.Any(x => x.HasCard)))
+            .OrderBy(r => r.Pin.Length).ThenBy(r => r.Pin).ToList();
+    }
+
+    private IEnumerable<Row> Filtered
+    {
+        get
+        {
+            var rows = (IEnumerable<Row>)(_rows ?? new List<Row>());
+            if (_dept > 0) { var name = _depts.FirstOrDefault(d => d.Id == _dept)?.Name; rows = rows.Where(r => r.Department == name); }
+            rows = _show switch
+            {
+                "gaps" => rows.Where(r => !r.HasFinger && !r.HasFace),
+                "noface" => rows.Where(r => !r.HasFace),
+                "nofinger" => rows.Where(r => !r.HasFinger),
+                _ => rows
+            };
+            if (!string.IsNullOrWhiteSpace(_filter))
+                rows = rows.Where(r => r.Pin.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                    || r.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase));
+            return rows;
+        }
+    }
+
+    private static string StatusBadge(Row r)
+    {
+        if (!r.HasFinger && !r.HasFace) return "<span class='badge bg-danger'>No biometric</span>";
+        if (!r.HasFace) return "<span class='badge bg-warning text-dark'>No face</span>";
+        if (!r.HasFinger) return "<span class='badge bg-info text-dark'>No fingerprint</span>";
+        return "<span class='badge bg-success'>OK</span>";
+    }
+}

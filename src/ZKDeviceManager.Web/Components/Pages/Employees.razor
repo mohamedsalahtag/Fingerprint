@@ -1,0 +1,426 @@
+@page "/employees"
+@rendermode InteractiveServer
+@using ClosedXML.Excel
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject JobService Jobs
+
+<PageTitle>Employees</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h1 class="h3 mb-0">Employees <small class="text-muted fs-6">(directory)</small></h1>
+    <div>
+        <a class="btn btn-outline-success btn-sm" href="/export/employees"><span class="bi bi-file-earmark-excel"></span> Excel</a>
+        <button class="btn btn-outline-secondary btn-sm" @onclick="() => _showImport = !_showImport"><span class="bi bi-file-earmark-excel"></span> Import Excel</button>
+    </div>
+</div>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-@_flashKind alert-dismissible">@_flash <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
+}
+
+@if (_showImport)
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <label class="form-label small mb-1"><strong>Upload the filled employees Excel (.xlsx)</strong> — the sheet you downloaded, with columns
+                <em>User ID, Full name, Department, Job title, Card, Shift, Hire date, Active, All sites</em> (keep the header row). Only
+                <em>User ID</em> is required per row; departments are created automatically. Updates existing employees and adds new ones.</label>
+            <InputFile OnChange="OnFileSelected" accept=".xlsx" class="form-control form-control-sm" />
+            <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" id="pushImp" @bind="_pushOnImport" />
+                <label class="form-check-label small" for="pushImp">Also update the name on the terminals (for people already on a device)</label>
+            </div>
+            <button class="btn btn-primary btn-sm mt-2" disabled="@(_selectedFile is null || _importing)" @onclick="RunImportAsync">
+                @if (_importing) { <span class="spinner-border spinner-border-sm me-1"></span> }
+                <span class="bi bi-upload"></span> Import @(_selectedFileName is null ? "" : $"“{_selectedFileName}”")
+            </button>
+        </div>
+    </div>
+}
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-md-3"><label class="form-label mb-0 small">Search id / name</label>
+        <input class="form-control form-control-sm" placeholder="filter…" @bind="_filter" @bind:event="oninput" /></div>
+    <div class="col-md-3"><label class="form-label mb-0 small">Department</label>
+        <select class="form-select form-select-sm" @bind="_deptFilter">
+            <option value="0">All</option>
+            <option value="-1">— unassigned —</option>
+            @foreach (var d in _depts) { <option value="@d.Id">@d.Name</option> }
+        </select></div>
+    <div class="col-md-3"><label class="form-label mb-0 small">Show</label>
+        <select class="form-select form-select-sm" @bind="_statusFilter">
+            <option value="registered">Registered app users</option>
+            <option value="all">Everyone (incl. device-only)</option>
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+            <option value="ondevice">On a device</option>
+            <option value="notondevice">Not on any device</option>
+            <option value="none">No employee record</option>
+        </select></div>
+</div>
+
+@if (_rows is null) { <p><em>Loading…</em></p> }
+else
+{
+    var shown = Filtered.Take(300).ToList();
+    var total = Filtered.Count();
+    <p class="text-muted small">@shown.Count@(total > shown.Count ? $" of {total} (refine your search to see the rest)" : "") shown ·
+        @_rows.Count(r => r.Emp is not null) registered app users ·
+        @_onDevices.Count enrolled on a device</p>
+    <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle">
+            <thead><tr><th style="width:90px">User id</th><th>Name</th><th>Department</th><th>Shift</th>
+                <th title="Attendance devices this person is enrolled on">On devices</th>
+                <th class="text-center">Active</th><th class="text-center" title="Loaded on every site">All sites</th><th class="text-end"></th></tr></thead>
+            <tbody>
+                @foreach (var r in shown)
+                {
+                    var devs = _onDevices.GetValueOrDefault(r.Pin);
+                    <tr class="@(r.Emp is null ? "table-warning" : null)">
+                        <td class="fw-semibold">@r.Pin</td>
+                        <td>@(r.Emp?.FullName ?? "—")</td>
+                        <td>@DeptName(r.Emp?.DepartmentId)</td>
+                        <td>@ShiftName(r.Emp?.ShiftId)</td>
+                        <td>
+                            @if (devs is { Count: > 0 })
+                            {
+                                @foreach (var d in devs) { <span class="badge text-bg-success me-1">@d</span> }
+                            }
+                            else { <span class="badge text-bg-light border text-muted">not enrolled</span> }
+                        </td>
+                        <td class="text-center">@(r.Emp is null ? "" : r.Emp.Active ? "✔" : "—")</td>
+                        <td class="text-center">@(r.Emp?.AllSites == true ? "✔" : "")</td>
+                        <td class="text-end text-nowrap">
+                            <button class="btn btn-sm btn-outline-secondary" title="Edit" @onclick="() => Edit(r)"><span class="bi bi-pencil"></span></button>
+                            @if (r.Emp is not null)
+                            {
+                                <button class="btn btn-sm btn-outline-danger" title="Delete employee" @onclick="() => _deleting = r.Emp"><span class="bi bi-trash"></span></button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (_editing is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header"><h5 class="modal-title">Employee @_editing.Pin</h5>
+                    <button type="button" class="btn-close" @onclick="() => _editing = null"></button></div>
+                <div class="modal-body">
+                    <div class="row g-2">
+                        <div class="col-8"><label class="form-label small mb-0">Full name</label>
+                            <input class="form-control form-control-sm" @bind="_editing.FullName" /></div>
+                        <div class="col-4"><label class="form-label small mb-0">Card</label>
+                            <input class="form-control form-control-sm" @bind="_editing.CardNumber" /></div>
+                        <div class="col-6"><label class="form-label small mb-0">Department</label>
+                            <select class="form-select form-select-sm" @bind="_editing.DepartmentId">
+                                <option value="">—</option>
+                                @foreach (var d in _depts) { <option value="@d.Id">@d.Name</option> }
+                            </select></div>
+                        <div class="col-6"><label class="form-label small mb-0">Shift</label>
+                            <select class="form-select form-select-sm" @bind="_editing.ShiftId">
+                                <option value="">—</option>
+                                @foreach (var s in _shifts) { <option value="@s.Id">@s.Name</option> }
+                            </select></div>
+                        <div class="col-6"><label class="form-label small mb-0">Job title</label>
+                            <input class="form-control form-control-sm" @bind="_editing.JobTitle" /></div>
+                        <div class="col-6"><label class="form-label small mb-0">Hire date</label>
+                            <input type="date" class="form-control form-control-sm" @bind="_hireDate" /></div>
+                        <div class="col-6 mt-3">
+                            <div class="form-check"><input class="form-check-input" type="checkbox" id="active" @bind="_editing.Active" />
+                                <label class="form-check-label small" for="active">Active (employed)</label></div>
+                        </div>
+                        <div class="col-6 mt-3">
+                            <div class="form-check"><input class="form-check-input" type="checkbox" id="allsites" @bind="_editing.AllSites" />
+                                <label class="form-check-label small" for="allsites">Load on all sites</label></div>
+                        </div>
+                    </div>
+                    <p class="small text-muted mt-2 mb-0">"Save &amp; update terminal name" also pushes this name to the machine(s) this person is enrolled on.</p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => _editing = null">Cancel</button>
+                    <button class="btn btn-outline-primary" @onclick="() => SaveAsync(false)">Save</button>
+                    <button class="btn btn-primary" @onclick="() => SaveAsync(true)"><span class="bi bi-hdd-network"></span> Save &amp; update terminal name</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_deleting is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content border-danger">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title"><span class="bi bi-trash"></span> Delete employee?</h5>
+                    <button type="button" class="btn-close btn-close-white" @onclick="() => _deleting = null"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Remove <strong>@(_deleting.FullName ?? _deleting.Pin)</strong> (@_deleting.Pin) from the app's employee list.</p>
+                    <p class="small text-muted mb-0">This removes the app record only — the person's enrollment on the
+                        attendance devices and their attendance history are <strong>not</strong> touched.</p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => _deleting = null">Cancel</button>
+                    <button class="btn btn-danger" @onclick="DeleteAsync"><span class="bi bi-trash"></span> Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private record Row(string Pin, Employee? Emp);
+
+    private List<Row>? _rows;
+    private List<Department> _depts = new();
+    private List<Shift> _shifts = new();
+    private Dictionary<string, List<string>> _onDevices = new();
+    private Employee? _editing;
+    private Employee? _deleting;
+    private DateTime? _hireDate;
+    private string _filter = "";
+    private int _deptFilter;
+    private string _statusFilter = "registered";
+    private bool _showImport;
+    private bool _pushOnImport;
+    private bool _importing;
+    private IBrowserFile? _selectedFile;
+    private string? _selectedFileName;
+    private string? _flash;
+    private string _flashKind = "success";
+
+    private void OnFileSelected(InputFileChangeEventArgs e)
+    {
+        _selectedFile = e.File;
+        _selectedFileName = e.File?.Name;
+        _flash = null;
+    }
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _depts = await db.Departments.OrderBy(d => d.Name).ToListAsync();
+        _shifts = await db.Shifts.OrderBy(s => s.Name).ToListAsync();
+        var emps = await db.Employees.ToDictionaryAsync(e => e.Pin, e => e);
+        var deviceNames = await db.Devices.ToDictionaryAsync(d => d.Id, d => d.Name);
+
+        // Which attendance devices each PIN is enrolled on.
+        var enrollment = await db.EnrolledUsers.Select(u => new { u.DeviceUserId, u.SourceDeviceId }).Distinct().ToListAsync();
+        _onDevices = enrollment.GroupBy(x => x.DeviceUserId)
+            .ToDictionary(g => g.Key,
+                g => g.Select(x => deviceNames.GetValueOrDefault(x.SourceDeviceId, x.SourceDeviceId.ToString()))
+                      .OrderBy(n => n).ToList());
+
+        var allPins = _onDevices.Keys.Concat(emps.Keys).Distinct();
+        _rows = allPins.Select(p => new Row(p, emps.GetValueOrDefault(p)))
+            .OrderBy(r => r.Pin.Length).ThenBy(r => r.Pin).ToList();
+    }
+
+    private string DeptName(int? id) => id is null ? "—" : _depts.FirstOrDefault(d => d.Id == id)?.Name ?? "—";
+    private string ShiftName(int? id) => id is null ? "—" : _shifts.FirstOrDefault(s => s.Id == id)?.Name ?? "—";
+
+    private IEnumerable<Row> Filtered
+    {
+        get
+        {
+            var rows = (IEnumerable<Row>)(_rows ?? new List<Row>());
+            if (_deptFilter == -1) rows = rows.Where(r => r.Emp?.DepartmentId is null);
+            else if (_deptFilter > 0) rows = rows.Where(r => r.Emp?.DepartmentId == _deptFilter);
+            rows = _statusFilter switch
+            {
+                "registered" => rows.Where(r => r.Emp is not null),
+                "active" => rows.Where(r => r.Emp?.Active == true),
+                "inactive" => rows.Where(r => r.Emp is not null && !r.Emp.Active),
+                "ondevice" => rows.Where(r => _onDevices.ContainsKey(r.Pin)),
+                "notondevice" => rows.Where(r => !_onDevices.ContainsKey(r.Pin)),
+                "none" => rows.Where(r => r.Emp is null),
+                _ => rows
+            };
+            if (!string.IsNullOrWhiteSpace(_filter))
+                rows = rows.Where(r => r.Pin.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                    || (r.Emp?.FullName?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false));
+            return rows;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        var pin = _deleting!.Pin;
+        await using var db = DbFactory.CreateDbContext();
+        var e = await db.Employees.FirstOrDefaultAsync(x => x.Pin == pin);
+        if (e is not null) { db.Employees.Remove(e); await db.SaveChangesAsync(); }
+        _flash = $"Deleted employee {pin} from the app (device enrollment kept)."; _flashKind = "success";
+        _deleting = null;
+        await LoadAsync();
+    }
+
+    private void Edit(Row r)
+    {
+        _editing = r.Emp is null
+            ? new Employee { Pin = r.Pin, Active = true }
+            : new Employee { Id = r.Emp.Id, Pin = r.Emp.Pin, FullName = r.Emp.FullName, JobTitle = r.Emp.JobTitle,
+                CardNumber = r.Emp.CardNumber, DepartmentId = r.Emp.DepartmentId, ShiftId = r.Emp.ShiftId,
+                HireDate = r.Emp.HireDate, Active = r.Emp.Active, AllSites = r.Emp.AllSites };
+        _hireDate = _editing.HireDate?.ToDateTime(TimeOnly.MinValue);
+    }
+
+    private async Task SaveAsync(bool push)
+    {
+        _editing!.HireDate = _hireDate is null ? null : DateOnly.FromDateTime(_hireDate.Value);
+        var pin = _editing.Pin;
+        await using var db = DbFactory.CreateDbContext();
+        var e = await db.Employees.FirstOrDefaultAsync(x => x.Pin == pin);
+        if (e is null) { e = new Employee { Pin = pin, CreatedUtc = DateTime.UtcNow }; db.Employees.Add(e); }
+        e.FullName = Blank(_editing.FullName); e.JobTitle = Blank(_editing.JobTitle); e.CardNumber = Blank(_editing.CardNumber);
+        e.DepartmentId = _editing.DepartmentId == 0 ? null : _editing.DepartmentId;
+        e.ShiftId = _editing.ShiftId == 0 ? null : _editing.ShiftId;
+        e.HireDate = _editing.HireDate; e.Active = _editing.Active; e.AllSites = _editing.AllSites;
+        e.UpdatedUtc = DateTime.UtcNow;
+
+        // Keep the unified device-push name in sync with the HR name.
+        if (!string.IsNullOrWhiteSpace(e.FullName))
+        {
+            var p = await db.UserProfiles.FirstOrDefaultAsync(x => x.Pin == pin);
+            if (p is null) { p = new UserProfile { Pin = pin }; db.UserProfiles.Add(p); }
+            p.DisplayName = e.FullName; p.UpdatedUtc = DateTime.UtcNow;
+        }
+        await db.SaveChangesAsync();
+
+        int pushed = push ? await PushNameAsync(db, pin) : 0;
+        _flash = $"Saved employee {pin}." + (push ? $" Queued {pushed} terminal name-update job(s)." : "");
+        _flashKind = "success"; _editing = null;
+        await LoadAsync();
+    }
+
+    // Push the unified name to every terminal this PIN is enrolled on (updates the machine's user name).
+    private async Task<int> PushNameAsync(AppDbContext db, string pin)
+    {
+        var deviceIds = await db.EnrolledUsers.Where(u => u.DeviceUserId == pin)
+            .Select(u => u.SourceDeviceId).Distinct().ToListAsync();
+        foreach (var did in deviceIds) await Jobs.QueueApplyNameAsync(did, pin);
+        return deviceIds.Count;
+    }
+
+    private async Task RunImportAsync()
+    {
+        if (_selectedFile is null || _importing) return;
+        _importing = true; _flash = null;
+        try
+        {
+            using var ms = new MemoryStream();
+            await _selectedFile.OpenReadStream(30 * 1024 * 1024).CopyToAsync(ms);
+            ms.Position = 0;
+            using var wb = new XLWorkbook(ms);
+            var ws = wb.Worksheets.FirstOrDefault();
+            if (ws is null) { _flash = "The workbook has no sheets."; _flashKind = "danger"; return; }
+            var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
+
+            var headers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in ws.Row(1).CellsUsed()) headers[c.GetString().Trim()] = c.Address.ColumnNumber;
+            // Match a header exactly first, then by "contains" so slight header differences still work.
+            int Col(params string[] names)
+            {
+                foreach (var n in names) { var k = headers.Keys.FirstOrDefault(h => h.Equals(n, StringComparison.OrdinalIgnoreCase)); if (k != null) return headers[k]; }
+                foreach (var n in names) { var k = headers.Keys.FirstOrDefault(h => h.Contains(n, StringComparison.OrdinalIgnoreCase)); if (k != null) return headers[k]; }
+                return 0;
+            }
+
+            int cPin = Col("User ID", "UserId", "PIN", "Employee ID", "EmployeeID");
+            if (cPin == 0) { _flash = $"Couldn't find a 'User ID' column. Headers found: {string.Join(", ", headers.Keys)}."; _flashKind = "danger"; return; }
+            int cName = Col("Full name", "Employee name", "Name"), cDept = Col("Department", "Dept"),
+                cTitle = Col("Job title", "Title", "Position"), cCard = Col("Card"), cShift = Col("Shift"),
+                cHire = Col("Hire date", "HireDate", "Joining"), cActive = Col("Active", "Status"),
+                cAll = Col("All sites", "AllSites");
+
+            await using var db = DbFactory.CreateDbContext();
+            var depByName = await db.Departments.ToDictionaryAsync(d => d.Name.ToLower(), d => d);
+            var shiftByName = await db.Shifts.ToDictionaryAsync(s => s.Name.ToLower(), s => s);
+            int added = 0, updated = 0, depNew = 0, skippedLong = 0;
+            var importedPins = new HashSet<string>();
+
+            for (int r = 2; r <= lastRow; r++)
+            {
+                string Get(int col) => col == 0 ? "" : ws.Cell(r, col).GetString().Trim();
+                var pin = Get(cPin);
+                if (string.IsNullOrWhiteSpace(pin)) continue;
+                if (pin.Length > 24) { skippedLong++; continue; }   // PIN column is 24 chars
+                importedPins.Add(pin);
+
+                var depName = Get(cDept);
+                int? depId = null;
+                if (!string.IsNullOrWhiteSpace(depName))
+                {
+                    var dkey = Cap(depName, 100).ToLower();
+                    if (!depByName.TryGetValue(dkey, out var dep))
+                    { dep = new Department { Name = Cap(depName, 100) }; db.Departments.Add(dep); await db.SaveChangesAsync(); depByName[dkey] = dep; depNew++; }
+                    depId = dep.Id;
+                }
+                var shiftName = Get(cShift);
+                int? shiftId = !string.IsNullOrWhiteSpace(shiftName) && shiftByName.TryGetValue(shiftName.ToLower(), out var sh) ? sh.Id : null;
+
+                var emp = await db.Employees.FirstOrDefaultAsync(x => x.Pin == pin);
+                if (emp is null) { emp = new Employee { Pin = pin }; db.Employees.Add(emp); added++; } else updated++;
+                var name = Get(cName);
+                if (!string.IsNullOrWhiteSpace(name)) emp.FullName = Cap(name, 100);
+                if (Get(cTitle) is { Length: > 0 } jt) emp.JobTitle = Cap(jt, 100);
+                if (Get(cCard) is { Length: > 0 } cn) emp.CardNumber = Cap(cn, 30);
+                if (depId is not null) emp.DepartmentId = depId;
+                if (shiftId is not null) emp.ShiftId = shiftId;
+                if (cHire > 0 && ws.Cell(r, cHire).TryGetValue<DateTime>(out var hd)) emp.HireDate = DateOnly.FromDateTime(hd);
+                emp.Active = cActive == 0 || IsYes(Get(cActive), true);
+                if (cAll > 0) emp.AllSites = IsYes(Get(cAll), false);
+                emp.UpdatedUtc = DateTime.UtcNow;
+
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    var p = await db.UserProfiles.FirstOrDefaultAsync(x => x.Pin == pin);
+                    if (p is null) { p = new UserProfile { Pin = pin }; db.UserProfiles.Add(p); }
+                    p.DisplayName = Cap(name, 50); p.UpdatedUtc = DateTime.UtcNow;   // DisplayName column is 50
+                }
+                await db.SaveChangesAsync();
+            }
+            int pushed = 0;
+            if (_pushOnImport && importedPins.Count > 0)
+            {
+                var pairs = await db.EnrolledUsers.Where(u => importedPins.Contains(u.DeviceUserId))
+                    .Select(u => new { u.SourceDeviceId, u.DeviceUserId }).Distinct().ToListAsync();
+                foreach (var pr in pairs) await Jobs.QueueApplyNameAsync(pr.SourceDeviceId, pr.DeviceUserId);
+                pushed = pairs.Count;
+            }
+            _flash = $"Excel import: {added} added, {updated} updated, {depNew} new department(s)." +
+                     (skippedLong > 0 ? $" Skipped {skippedLong} row(s) whose User ID was longer than 24 chars." : "") +
+                     (pushed > 0 ? $" Queued {pushed} terminal name-update job(s)." : "") +
+                     $" (Detected columns — name:{(cName > 0 ? "yes" : "NO")}, department:{(cDept > 0 ? "yes" : "NO")}, title:{(cTitle > 0 ? "yes" : "NO")}.)";
+            _flashKind = "success";
+            _showImport = false;
+        }
+        catch (Exception ex)
+        {
+            _flash = "Excel import failed: " + (ex.InnerException?.Message ?? ex.Message) +
+                     ". Make sure it's the .xlsx you downloaded (not .xls or CSV) with its header row intact.";
+            _flashKind = "danger";
+        }
+        finally
+        {
+            _importing = false; _selectedFile = null; _selectedFileName = null;
+            try { await LoadAsync(); } catch { /* ignore */ }
+        }
+    }
+
+    private static bool IsYes(string s, bool blankDefault) =>
+        string.IsNullOrWhiteSpace(s) ? blankDefault
+        : s.StartsWith("y", StringComparison.OrdinalIgnoreCase) || s == "1" || s.Equals("true", StringComparison.OrdinalIgnoreCase);
+
+    private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+    private static string Cap(string s, int max) => s.Length <= max ? s : s[..max];
+}

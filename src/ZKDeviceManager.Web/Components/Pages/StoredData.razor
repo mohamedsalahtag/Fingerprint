@@ -1,0 +1,172 @@
+@page "/data"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>User Templates</PageTitle>
+
+<h1 class="h3 mb-3">User Templates</h1>
+
+<div class="row mb-3">
+    <div class="col-md-5">
+        <label class="form-label">Source device</label>
+        <select class="form-select" @bind="SelectedDeviceId" @bind:after="LoadUsersAsync">
+            <option value="0">— select a device —</option>
+            <option value="-1">All devices</option>
+            @if (_devices is not null)
+            {
+                @foreach (var d in _devices)
+                {
+                    <option value="@d.Id">@d.Name (@d.IpAddress)</option>
+                }
+            }
+        </select>
+    </div>
+    <div class="col-md-4">
+        <label class="form-label">Search user id / name</label>
+        <input class="form-control" placeholder="filter…" @bind="_filter" @bind:event="oninput" />
+    </div>
+</div>
+
+@if (SelectedDeviceId == 0)
+{
+    <div class="alert alert-info">Select a device to view its downloaded users.</div>
+}
+else if (_users is null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <p class="text-muted">
+        @Filtered.Count() of @_users.Count users •
+        @_users.Count(u => u.Templates.Any(t => t.Type == TemplateType.Fingerprint)) with fingerprints •
+        @_users.Count(u => u.Templates.Any(t => t.Type == TemplateType.Face)) with faces •
+        @_users.Count(u => !string.IsNullOrEmpty(u.CardNumber)) with cards
+        <span class="ms-1">(@_users.Sum(u => u.Templates.Count(t => t.Type == TemplateType.Fingerprint)) fingerprint +
+        @_users.Sum(u => u.Templates.Count(t => t.Type == TemplateType.Face)) face templates)</span>
+    </p>
+    <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+            <thead>
+                <tr>
+                    <th>User ID</th><th>Name</th><th>Device</th><th>Privilege</th><th>Enabled</th>
+                    <th>Fingerprints</th><th>Face</th><th>Card</th><th>Downloaded</th><th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var u in Filtered)
+                {
+                    var fps = u.Templates.Count(t => t.Type == TemplateType.Fingerprint);
+                    var hasFace = u.Templates.Any(t => t.Type == TemplateType.Face);
+                    <tr>
+                        <td>@u.DeviceUserId</td>
+                        <td>@(_names.GetValueOrDefault(u.DeviceUserId) ?? u.Name ?? "—")</td>
+                        <td class="small">@_deviceNames.GetValueOrDefault(u.SourceDeviceId, "—")</td>
+                        <td>@(u.Privilege == 3 ? "Admin" : u.Privilege.ToString())</td>
+                        <td>@(u.Enabled ? "Yes" : "No")</td>
+                        <td>@fps</td>
+                        <td>@(hasFace ? "✔" : "—")</td>
+                        <td>@(u.CardNumber ?? "—")</td>
+                        <td>@u.LastDownloadedUtc.ToLocalTime().ToString("g")</td>
+                        <td>
+                            @if (u.Templates.Count > 0)
+                            {
+                                <button class="btn btn-sm btn-outline-secondary"
+                                        @onclick="() => Toggle(u.Id)">
+                                    @(_expanded == u.Id ? "Hide" : "Templates")
+                                </button>
+                            }
+                        </td>
+                    </tr>
+                    @if (_expanded == u.Id)
+                    {
+                        var fpList = u.Templates.Where(t => t.Type == TemplateType.Fingerprint).OrderBy(t => t.FingerIndex).ToList();
+                        var faceList = u.Templates.Where(t => t.Type == TemplateType.Face).OrderBy(t => t.FingerIndex).ToList();
+                        <tr class="table-light">
+                            <td colspan="10">
+                                <div class="mb-2">
+                                    <span class="badge text-bg-primary"><span class="bi bi-fingerprint"></span> Fingerprints</span>
+                                    <span class="text-muted small">@fpList.Count template(s)</span>
+                                </div>
+                                @if (fpList.Count > 0)
+                                {
+                                    <table class="table table-sm mb-3">
+                                        <thead><tr><th style="width:110px">Finger index</th><th style="width:70px">Flag</th><th style="width:90px">Length</th><th>Template data</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var t in fpList)
+                                            {
+                                                <tr>
+                                                    <td>@t.FingerIndex</td>
+                                                    <td>@t.Flag</td>
+                                                    <td>@t.Length</td>
+                                                    <td><textarea class="form-control form-control-sm font-monospace" rows="2" readonly style="font-size:.7rem">@t.Data</textarea></td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                }
+
+                                <div class="mb-2">
+                                    <span class="badge text-bg-success"><span class="bi bi-person-bounding-box"></span> Faces</span>
+                                    <span class="text-muted small">@faceList.Count template(s)</span>
+                                </div>
+                                @if (faceList.Count > 0)
+                                {
+                                    var faceCombined = string.Join("\n", faceList.Select(t => t.Data));
+                                    <div class="small text-muted mb-1">
+                                        Combined: @faceList.Count template(s) · total length @faceList.Sum(t => t.Length)
+                                    </div>
+                                    <textarea class="form-control form-control-sm font-monospace" rows="6" readonly style="font-size:.7rem">@faceCombined</textarea>
+                                }
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "device")] public int? DeviceQuery { get; set; }
+
+    private List<Device>? _devices;
+    private List<EnrolledUser>? _users;
+    private Dictionary<int, string> _deviceNames = new();
+    private Dictionary<string, string> _names = new();
+    private string _filter = "";
+
+    public int SelectedDeviceId { get; set; }
+    private int _expanded;
+
+    private void Toggle(int userId) => _expanded = _expanded == userId ? 0 : userId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _devices = await db.Devices.OrderBy(d => d.Name).ToListAsync();
+        _deviceNames = _devices.ToDictionary(d => d.Id, d => d.Name);
+        _names = await UserDirectory.DisplayNamesAsync(db);
+        if (DeviceQuery is > 0)
+        {
+            SelectedDeviceId = DeviceQuery.Value;
+            await LoadUsersAsync();
+        }
+    }
+
+    private async Task LoadUsersAsync()
+    {
+        if (SelectedDeviceId == 0) { _users = null; return; }
+        await using var db = DbFactory.CreateDbContext();
+        IQueryable<EnrolledUser> q = db.EnrolledUsers.Include(u => u.Templates).AsNoTracking();
+        if (SelectedDeviceId > 0) q = q.Where(u => u.SourceDeviceId == SelectedDeviceId); // -1 = all devices
+        _users = await q.OrderBy(u => u.DeviceUserId).ToListAsync();
+    }
+
+    private IEnumerable<EnrolledUser> Filtered =>
+        string.IsNullOrWhiteSpace(_filter) || _users is null
+            ? _users ?? Enumerable.Empty<EnrolledUser>()
+            : _users.Where(u => u.DeviceUserId.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                             || (u.Name?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)
+                             || (_names.GetValueOrDefault(u.DeviceUserId)?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false));
+}

@@ -1,0 +1,163 @@
+@page "/attendance"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject JobService Jobs
+@implements IDisposable
+@inject IJobNotifier Notifier
+
+<PageTitle>Attendance Log</PageTitle>
+
+<h1 class="h3 mb-3">Attendance Log</h1>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-@_flashKind alert-dismissible">@_flash
+        <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
+}
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-md-3">
+        <label class="form-label">Device</label>
+        <select class="form-select" @bind="SelectedDeviceId" @bind:after="LoadAsync">
+            <option value="0">— select a device —</option>
+            <option value="-1">All devices</option>
+            @foreach (var d in _devices)
+            {
+                <option value="@d.Id">@d.Name (@d.IpAddress)</option>
+            }
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label class="form-label">User (id or name)</label>
+        <input class="form-control" placeholder="search user…" @bind="_userFilter" @bind:after="LoadAsync" @bind:event="oninput" />
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">From</label>
+        <input type="date" class="form-control" @bind="_from" @bind:after="LoadAsync" />
+    </div>
+    <div class="col-md-2">
+        <label class="form-label">To</label>
+        <input type="date" class="form-control" @bind="_to" @bind:after="LoadAsync" />
+    </div>
+    <div class="col-md-2 d-grid gap-1">
+        <button class="btn btn-primary btn-sm" disabled="@(SelectedDeviceId <= 0)" @onclick="DownloadAsync">
+            <span class="bi bi-download"></span> Request from device
+        </button>
+        <a class="btn btn-outline-success btn-sm @(SelectedDeviceId == 0 ? "disabled" : "")" href="@ExportUrl()">
+            <span class="bi bi-file-earmark-excel"></span> Download Excel
+        </a>
+    </div>
+</div>
+
+@if (SelectedDeviceId == 0)
+{
+    <div class="alert alert-info">Select a device (or <strong>All devices</strong>) to view attendance logs. Terminals push new punches in real time; use <strong>Request from device</strong> to pull the stored history on demand.</div>
+}
+else if (_logs is null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <p class="text-muted">@_logs.Count records @(_from is not null ? $"from {_from:d}" : "") @(_to is not null ? $"to {_to:d}" : "")</p>
+    <div class="table-responsive">
+        <table class="table table-sm table-striped">
+            <thead><tr><th>Device</th><th>User</th><th>User ID</th><th>Timestamp</th><th>Verify</th><th>In/Out</th><th>Work code</th></tr></thead>
+            <tbody>
+                @foreach (var l in _logs)
+                {
+                    <tr>
+                        <td>@(l.DeviceName ?? "—")</td>
+                        <td>@_names.GetValueOrDefault(l.DeviceUserId, "—")</td>
+                        <td>@l.DeviceUserId</td>
+                        <td>@l.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td>@VerifyName(l.VerifyMode)</td>
+                        <td>@l.InOutMode</td>
+                        <td>@l.WorkCode</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<Device> _devices = new();
+    private List<AttendanceLog>? _logs;
+    private Dictionary<string, string> _names = new();
+    private DateTime? _from = DateTime.Today.AddDays(-30);
+    private DateTime? _to;
+    private string _userFilter = "";
+    private string? _flash;
+    private string _flashKind = "info";
+
+    public int SelectedDeviceId { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Notifier.JobChanged += OnJobChanged;
+        await using var db = DbFactory.CreateDbContext();
+        _devices = await db.Devices.OrderBy(d => d.Name).ToListAsync();
+        _names = await UserDirectory.BestNamesAsync(db);
+    }
+
+    private async Task LoadAsync()
+    {
+        if (SelectedDeviceId == 0) { _logs = null; return; }
+        await using var db = DbFactory.CreateDbContext();
+        IQueryable<AttendanceLog> q = db.AttendanceLogs;
+        if (SelectedDeviceId > 0) q = q.Where(l => l.DeviceId == SelectedDeviceId); // -1 = all devices
+        if (_from is not null) q = q.Where(l => l.Timestamp >= _from.Value.Date);
+        if (_to is not null) q = q.Where(l => l.Timestamp < _to.Value.Date.AddDays(1));
+        if (!string.IsNullOrWhiteSpace(_userFilter))
+        {
+            var f = _userFilter.Trim();
+            var pins = _names.Where(kv => kv.Value.Contains(f, StringComparison.OrdinalIgnoreCase))
+                             .Select(kv => kv.Key).ToList();
+            q = q.Where(l => l.DeviceUserId.Contains(f) || pins.Contains(l.DeviceUserId));
+        }
+        _logs = await q.OrderByDescending(l => l.Timestamp).Take(2000).ToListAsync();
+    }
+
+    private async Task DownloadAsync()
+    {
+        var id = await Jobs.QueueSyncDownloadLogsAsync(SelectedDeviceId);
+        Flash($"Attendance request queued (job #{id}). Logs appear here as the terminal uploads them.", "info");
+    }
+
+    private string ExportUrl()
+    {
+        var q = new List<string> { $"device={SelectedDeviceId}" };
+        if (_from is not null) q.Add($"from={_from:yyyy-MM-dd}");
+        if (_to is not null) q.Add($"to={_to:yyyy-MM-dd}");
+        if (!string.IsNullOrWhiteSpace(_userFilter)) q.Add($"user={Uri.EscapeDataString(_userFilter)}");
+        return "/export/attendance?" + string.Join("&", q);
+    }
+
+    private static string VerifyName(int v) => v switch
+    {
+        0 => "Password/Auto",
+        1 => "Fingerprint",
+        2 => "Fingerprint",
+        3 => "Password",
+        4 => "Card",
+        15 => "Face",
+        25 => "Palm",
+        _ => $"Mode {v}"
+    };
+
+    private System.Threading.Timer? _flashTimer;
+    private void Flash(string m, string k)
+    {
+        _flash = m; _flashKind = k;
+        _flashTimer?.Dispose();
+        if (k == "success")
+            _flashTimer = new System.Threading.Timer(_ => InvokeAsync(() => { _flash = null; StateHasChanged(); }),
+                null, 4000, System.Threading.Timeout.Infinite);
+    }
+
+    private async void OnJobChanged(int jobId)
+        => await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+
+    public void Dispose() { Notifier.JobChanged -= OnJobChanged; _flashTimer?.Dispose(); }
+}

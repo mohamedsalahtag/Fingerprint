@@ -1,0 +1,170 @@
+@page "/jobs"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IJobNotifier Notifier
+@inject JobService JobSvc
+@implements IDisposable
+
+<PageTitle>Jobs</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Jobs</h1>
+    <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync">
+        <span class="bi bi-arrow-clockwise"></span> Refresh
+    </button>
+</div>
+
+@if (_jobs is null)
+{
+    <p><em>Loading…</em></p>
+}
+else if (_jobs.Count == 0)
+{
+    <div class="alert alert-info">No jobs yet. Queue a sync, copy or control action from a device's page.</div>
+}
+else
+{
+    <div class="table-responsive">
+        <table class="table table-sm align-middle">
+            <thead>
+                <tr>
+                    <th>#</th><th>Type</th><th>Device</th><th>Target</th>
+                    <th>Status</th><th style="min-width:220px">Progress</th><th>Message</th><th>When</th><th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var j in _jobs)
+                {
+                    var (cur, tot, live) = LiveProgress(j);
+                    var pct = tot > 0 ? (int)(100.0 * cur / tot) : (j.Status == SyncJobStatus.Succeeded ? 100 : 0);
+                    <tr>
+                        <td>@j.Id</td>
+                        <td>@Describe(j.Type)</td>
+                        <td>@(_names.GetValueOrDefault(j.DeviceId, j.DeviceId.ToString()))</td>
+                        <td>@(j.TargetDeviceId is null ? "—" : _names.GetValueOrDefault(j.TargetDeviceId.Value, j.TargetDeviceId.ToString()!))</td>
+                        <td><span class="badge bg-@StatusColor(j.Status)">@j.Status</span></td>
+                        <td>
+                            @if (j.Status == SyncJobStatus.Running)
+                            {
+                                <div class="progress" style="height:18px">
+                                    <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                         style="width:@pct%">@pct%</div>
+                                </div>
+                                @if (live is not null) { <small class="text-muted">@live</small> }
+                            }
+                            else if (j.Status == SyncJobStatus.Succeeded)
+                            {
+                                <div class="progress" style="height:18px">
+                                    <div class="progress-bar bg-success" style="width:100%">Done</div>
+                                </div>
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                        <td class="small">@j.Message</td>
+                        <td class="small text-nowrap">@(j.StartedUtc?.ToLocalTime().ToString("g") ?? j.CreatedUtc.ToLocalTime().ToString("g"))</td>
+                        <td class="text-end">
+                            @if (j.Status is SyncJobStatus.Queued or SyncJobStatus.Running)
+                            {
+                                <button class="btn btn-sm btn-outline-danger" title="Cancel job"
+                                        @onclick="() => CancelAsync(j.Id)">
+                                    <span class="bi bi-x-circle"></span> Cancel
+                                </button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<SyncJob>? _jobs;
+    private Dictionary<int, string> _names = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        Notifier.JobChanged += OnJobChanged;
+        Notifier.ProgressReported += OnProgress;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _names = await db.Devices.ToDictionaryAsync(d => d.Id, d => d.Name);
+        _jobs = await db.SyncJobs.OrderByDescending(j => j.Id).Take(100).ToListAsync();
+    }
+
+    private (int cur, int tot, string? msg) LiveProgress(SyncJob j)
+    {
+        if (j.Status == SyncJobStatus.Running && Notifier.TryGetLive(j.Id, out var p))
+            return (p.Current, p.Total, p.Message);
+        return (j.Progress, j.Total, null);
+    }
+
+    private static string Describe(SyncJobType t) => t switch
+    {
+        SyncJobType.SyncDownload => "Sync data",
+        SyncJobType.SyncCopy => "Copy → device",
+        SyncJobType.SyncDownloadLogs => "Download logs",
+        SyncJobType.ApplyName => "Apply name",
+        SyncJobType.CreateUser => "Create user",
+        SyncJobType.EnrollFinger => "Enroll fingerprint",
+        SyncJobType.EnrollFace => "Enroll face",
+        SyncJobType.SetAdmsServer => "Set ADMS server",
+        SyncJobType.ControlRestart => "Restart",
+        SyncJobType.ControlPowerOff => "Power off",
+        SyncJobType.ControlClearUsers => "Delete all users",
+        SyncJobType.ControlSyncTime => "Sync time",
+        SyncJobType.ControlEnableUi => "Enable UI",
+        SyncJobType.ControlDisableUi => "Disable UI",
+        // legacy (historical rows)
+        SyncJobType.DownloadInfo => "Read info",
+        SyncJobType.DownloadUsersAndTemplates => "Download users (legacy)",
+        SyncJobType.UploadToDevice => "Upload (legacy)",
+        SyncJobType.CopyDeviceToDevice => "Copy live (legacy)",
+        SyncJobType.DownloadLogs => "Download logs (legacy)",
+        SyncJobType.DownloadFaces => "Download faces (legacy)",
+        _ => t.ToString()
+    };
+
+    private static string StatusColor(SyncJobStatus s) => s switch
+    {
+        SyncJobStatus.Queued => "secondary",
+        SyncJobStatus.Running => "primary",
+        SyncJobStatus.Succeeded => "success",
+        SyncJobStatus.Failed => "danger",
+        SyncJobStatus.Cancelled => "warning",
+        _ => "secondary"
+    };
+
+    private async Task CancelAsync(int jobId)
+    {
+        await JobSvc.CancelAsync(jobId);
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    private async void OnJobChanged(int jobId)
+    {
+        await InvokeAsync(async () =>
+        {
+            await LoadAsync();
+            StateHasChanged();
+        });
+    }
+
+    // Live per-item ticks: just re-render (progress read from the in-memory store, no DB hit).
+    private async void OnProgress(int jobId)
+        => await InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Notifier.JobChanged -= OnJobChanged;
+        Notifier.ProgressReported -= OnProgress;
+    }
+}

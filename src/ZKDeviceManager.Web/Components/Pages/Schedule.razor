@@ -1,0 +1,116 @@
+@page "/schedule"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject JobService Jobs
+
+<PageTitle>Automation</PageTitle>
+
+<h1 class="h3 mb-1">Automation &amp; Backups</h1>
+<p class="text-muted small">Daily tasks run once at their time (server local time). Nothing runs unless you enable it.</p>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-success alert-dismissible">@_flash <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
+}
+
+@if (_tasks is null) { <p><em>Loading…</em></p> }
+else
+{
+    <div class="table-responsive mb-4">
+        <table class="table table-sm align-middle" style="max-width:900px">
+            <thead><tr><th>Task</th><th style="width:90px">Enabled</th><th style="width:120px">Time</th><th>Last run</th><th>Result</th><th class="text-end">Run now</th></tr></thead>
+            <tbody>
+                @foreach (var t in _tasks)
+                {
+                    <tr>
+                        <td class="fw-semibold">@Describe(t.Type)</td>
+                        <td><div class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" checked="@t.Enabled" @onchange="e => ToggleAsync(t, (bool)e.Value!)" /></div></td>
+                        <td><input type="time" class="form-control form-control-sm" value="@t.TimeOfDay.ToString("HH:mm")" @onchange="e => TimeAsync(t, e.Value?.ToString())" /></td>
+                        <td class="small">@(t.LastRunUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "never")</td>
+                        <td class="small text-muted">@(t.LastResult ?? "—")</td>
+                        <td class="text-end"><button class="btn btn-sm btn-outline-primary" disabled="@_busy" @onclick="() => RunNowAsync(t.Type)">
+                            <span class="bi bi-play-fill"></span> Run</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <h2 class="h5">Backups</h2>
+    <p class="text-muted small">JSON snapshots of all users + templates (the 14 most recent are kept). Stored on the server at <code>@AutomationTasks.BackupDir</code>.</p>
+    @if (_backups.Count == 0) { <div class="alert alert-info">No backups yet. Enable the nightly backup or click <strong>Run</strong> on it.</div> }
+    else
+    {
+        <table class="table table-sm" style="max-width:560px">
+            <thead><tr><th>File</th><th class="text-end">Size</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var b in _backups)
+                {
+                    <tr><td class="small font-monospace">@b.Name</td><td class="text-end">@(b.Length / 1024) KB</td>
+                        <td class="text-end"><a class="btn btn-sm btn-outline-secondary" href="@($"/backup/download?name={b.Name}")"><span class="bi bi-download"></span></a></td></tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private List<ScheduledTask>? _tasks;
+    private List<(string Name, long Length)> _backups = new();
+    private bool _busy;
+    private string? _flash;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _tasks = await db.ScheduledTasks.OrderBy(t => t.Type).ToListAsync();
+        _backups = Directory.Exists(AutomationTasks.BackupDir)
+            ? new DirectoryInfo(AutomationTasks.BackupDir).GetFiles("zkdm_backup_*.json")
+                .OrderByDescending(f => f.Name).Select(f => (f.Name, f.Length)).ToList()
+            : new();
+    }
+
+    private static string Describe(ScheduledTaskType t) => t switch
+    {
+        ScheduledTaskType.NightlySync => "Nightly sync (users + fingerprints + faces)",
+        ScheduledTaskType.NightlyLogPull => "Nightly attendance-log pull",
+        ScheduledTaskType.NightlyBackup => "Nightly backup (JSON snapshot)",
+        _ => t.ToString()
+    };
+
+    private async Task ToggleAsync(ScheduledTask t, bool on)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var row = await db.ScheduledTasks.FirstAsync(x => x.Id == t.Id);
+        row.Enabled = on; await db.SaveChangesAsync();
+        await LoadAsync();
+    }
+
+    private async Task TimeAsync(ScheduledTask t, string? value)
+    {
+        if (!TimeOnly.TryParse(value, out var time)) return;
+        await using var db = DbFactory.CreateDbContext();
+        var row = await db.ScheduledTasks.FirstAsync(x => x.Id == t.Id);
+        row.TimeOfDay = time; await db.SaveChangesAsync();
+        await LoadAsync();
+    }
+
+    private async Task RunNowAsync(ScheduledTaskType type)
+    {
+        _busy = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var result = await AutomationTasks.RunAsync(type, db, Jobs);
+            var row = await db.ScheduledTasks.FirstAsync(x => x.Type == type);
+            row.LastRunUtc = DateTime.UtcNow; row.LastResult = result;
+            await db.SaveChangesAsync();
+            _flash = $"{Describe(type)}: {result}";
+        }
+        finally { _busy = false; }
+        await LoadAsync();
+    }
+}

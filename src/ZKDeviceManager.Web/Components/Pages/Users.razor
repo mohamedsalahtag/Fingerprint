@@ -1,0 +1,445 @@
+@page "/users"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject JobService Jobs
+@implements IDisposable
+@inject IJobNotifier Notifier
+
+<PageTitle>Users</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h1 class="h3 mb-0">Users <small class="text-muted fs-6">(unified by user id across all machines)</small></h1>
+    <div>
+        <button class="btn btn-success btn-sm" @onclick="OpenAdd"><span class="bi bi-person-plus"></span> Add user</button>
+        <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync"><span class="bi bi-arrow-clockwise"></span> Refresh</button>
+    </div>
+</div>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-@_flashKind alert-dismissible">@_flash
+        <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
+}
+
+@if (_rows is null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <div class="card mb-3">
+        <div class="card-body py-2">
+            <div class="row g-2 align-items-end mb-2">
+                <div class="col-md-3">
+                    <label class="form-label mb-0 small">Browse machine</label>
+                    <select class="form-select form-select-sm" @bind="_deviceFilter">
+                        <option value="0">All machines</option>
+                        @foreach (var d in _devices.OrderBy(d => d.Value))
+                        {
+                            <option value="@d.Key">@d.Value</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-9 d-flex align-items-end">
+                    <a class="btn btn-outline-success btn-sm" href="@($"/export/users?device={_deviceFilter}")">
+                        <span class="bi bi-file-earmark-excel"></span> Download users (Excel)
+                    </a>
+                </div>
+            </div>
+            <div class="row g-2 align-items-center">
+                <div class="col-md-3">
+                    <input class="form-control form-control-sm" placeholder="search user id / name…" @bind="_filter" @bind:event="oninput" />
+                </div>
+                <div class="col-md-6">
+                    <span class="small text-muted me-1">Target machines:</span>
+                    @foreach (var d in _devices.OrderBy(d => d.Value))
+                    {
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="tgt@(d.Key)"
+                                   checked="@_targets.Contains(d.Key)" @onchange="e => Target(d.Key, (bool)e.Value!)" />
+                            <label class="form-check-label small" for="tgt@(d.Key)">@d.Value</label>
+                        </div>
+                    }
+                </div>
+                <div class="col-md-3">
+                    <span class="small text-muted me-1">Enroll:</span>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="enroll" id="enF" checked="@(_enrollType == "finger")" @onchange="@(() => _enrollType = "finger")" />
+                        <label class="form-check-label small" for="enF">Fingerprint</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="enroll" id="enC" checked="@(_enrollType == "face")" @onchange="@(() => _enrollType = "face")" />
+                        <label class="form-check-label small" for="enC">Face</label>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-2 d-flex flex-wrap gap-2 align-items-center">
+                <span class="small text-muted">@_selected.Count selected ·</span>
+                <button class="btn btn-outline-primary btn-sm" disabled="@(_selected.Count == 0 || _targets.Count == 0)" @onclick="CopySelectedAsync">
+                    <span class="bi bi-box-arrow-in-right"></span> Copy selected → @_targets.Count machine(s)
+                </button>
+                <button class="btn btn-outline-danger btn-sm" disabled="@(_selected.Count == 0 || _targets.Count == 0)" @onclick="EnrollSelectedAsync">
+                    <span class="bi bi-fingerprint"></span> Enroll selected (@_enrollType) → @_targets.Count machine(s)
+                </button>
+                <button class="btn btn-outline-success btn-sm" disabled="@(_selected.Count == 0)" @onclick="ApplySelectedAsync">
+                    <span class="bi bi-people"></span> Apply names to machines
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <p class="text-muted small">@Filtered.Count() of @_rows.Count users</p>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle">
+            <thead>
+                <tr>
+                    <th style="width:28px"><input type="checkbox" @onchange="ToggleAll" checked="@AllVisibleSelected" /></th>
+                    <th style="width:100px">User id</th>
+                    <th style="width:220px">Default name</th>
+                    <th>Names on machines</th>
+                    <th style="width:80px" class="text-center">Faces/FP</th>
+                    <th style="width:260px" class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in Filtered)
+                {
+                    var conflict = r.DistinctNames.Count > 1;
+                    <tr>
+                        <td><input type="checkbox" checked="@_selected.Contains(r.Pin)" @onchange="e => Select(r.Pin, (bool)e.Value!)" /></td>
+                        <td class="fw-semibold">@r.Pin</td>
+                        <td>
+                            <div class="input-group input-group-sm">
+                                <input class="form-control" placeholder="@(r.Pin)" @bind="_edited[r.Pin]" />
+                                <button class="btn btn-outline-secondary" title="Save default name" @onclick="() => SaveNameAsync(r.Pin)">
+                                    <span class="bi bi-save"></span>
+                                </button>
+                            </div>
+                        </td>
+                        <td>
+                            @foreach (var inst in r.Instances)
+                            {
+                                var nm = string.IsNullOrWhiteSpace(inst.Name) ? "—" : inst.Name;
+                                var isDefault = !string.IsNullOrWhiteSpace(r.Default) && nm == r.Default;
+                                <span class="badge me-1 mb-1 @(isDefault ? "text-bg-success" : conflict ? "text-bg-warning" : "text-bg-light border")"
+                                      role="button" title="Use this as the default name" @onclick="() => UseName(r.Pin, inst.Name)">
+                                    @_devices.GetValueOrDefault(inst.DeviceId, "?"): <strong>@nm</strong>
+                                </span>
+                            }
+                        </td>
+                        <td class="text-center small">@(r.Instances.Any(i => i.HasFace) ? "✔" : "—") / @r.Instances.Max(i => i.Fp)</td>
+                        <td class="text-end text-nowrap">
+                            <button class="btn btn-sm btn-outline-success" title="Push the default name to the machines this user is on"
+                                    disabled="@string.IsNullOrWhiteSpace(_edited[r.Pin])" @onclick="() => ApplyNameAsync(r.Pin)">
+                                <span class="bi bi-people"></span>
+                            </button>
+                            <button class="btn btn-sm btn-outline-primary" title="Copy this user to the checked target machine(s)"
+                                    disabled="@(_targets.Count == 0)" @onclick="() => CopyUserAsync(r.Pin)">
+                                <span class="bi bi-box-arrow-in-right"></span> Copy
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" title="Send @_enrollType enrollment to the checked target machine(s)"
+                                    disabled="@(_targets.Count == 0)" @onclick="() => EnrollUserAsync(r.Pin)">
+                                <span class="bi bi-fingerprint"></span> Enroll
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (_adding)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><span class="bi bi-person-plus"></span> Add user &amp; enroll</h5>
+                    <button type="button" class="btn-close" @onclick="() => _adding = false"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-2">
+                        <div class="col-4">
+                            <label class="form-label mb-0 small">User id (PIN)</label>
+                            <input class="form-control form-control-sm" @bind="_newPin" />
+                        </div>
+                        <div class="col-8">
+                            <label class="form-label mb-0 small">Name</label>
+                            <input class="form-control form-control-sm" @bind="_newName" />
+                        </div>
+                    </div>
+                    <label class="form-label mb-0 small mt-3">Create on machine(s)</label>
+                    <div>
+                        @foreach (var d in _devices.OrderBy(d => d.Value))
+                        {
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="add@(d.Key)"
+                                       checked="@_addTargets.Contains(d.Key)" @onchange="e => AddTarget(d.Key, (bool)e.Value!)" />
+                                <label class="form-check-label small" for="add@(d.Key)">@d.Value</label>
+                            </div>
+                        }
+                    </div>
+                    <label class="form-label mb-0 small mt-3">Then start enrollment</label>
+                    <div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="addEnroll" id="ae0" checked="@(_addEnroll == "none")" @onchange="@(() => _addEnroll = "none")" />
+                            <label class="form-check-label small" for="ae0">None (just create)</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="addEnroll" id="ae1" checked="@(_addEnroll == "finger")" @onchange="@(() => _addEnroll = "finger")" />
+                            <label class="form-check-label small" for="ae1">Fingerprint</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="addEnroll" id="ae2" checked="@(_addEnroll == "face")" @onchange="@(() => _addEnroll = "face")" />
+                            <label class="form-check-label small" for="ae2">Face</label>
+                        </div>
+                    </div>
+                    <p class="small text-muted mt-2 mb-0">
+                        The user is created on the selected machine(s). If you pick an enrollment type, the terminal
+                        prompts the person to place a finger / show their face; the captured template uploads
+                        automatically and this app saves it.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => _adding = false">Cancel</button>
+                    <button class="btn btn-success" disabled="@(string.IsNullOrWhiteSpace(_newPin) || _addTargets.Count == 0)" @onclick="AddUserAsync">
+                        <span class="bi bi-check-lg"></span> Create @(_addEnroll == "none" ? "" : "& enroll")
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private record Instance(int DeviceId, string? Name, bool HasFace, int Fp);
+    private record UserRow(string Pin, string? Default, List<Instance> Instances)
+    {
+        public List<string> DistinctNames =>
+            Instances.Where(i => !string.IsNullOrWhiteSpace(i.Name)).Select(i => i.Name!).Distinct().ToList();
+    }
+
+    private List<UserRow>? _rows;
+    private Dictionary<int, string> _devices = new();
+    private readonly Dictionary<string, string?> _edited = new();
+    private readonly HashSet<string> _selected = new();
+    private readonly HashSet<int> _targets = new();
+    private string _enrollType = "finger";
+    private string _filter = "";
+    private int _deviceFilter;
+    private string? _flash;
+    private string _flashKind = "info";
+
+    // Add-user modal
+    private bool _adding;
+    private string _newPin = "";
+    private string _newName = "";
+    private readonly HashSet<int> _addTargets = new();
+    private string _addEnroll = "none";
+
+    protected override void OnInitialized() => Notifier.JobChanged += OnJobChanged;
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _devices = await db.Devices.ToDictionaryAsync(d => d.Id, d => d.Name);
+        var raw = await db.EnrolledUsers.Select(u => new
+        {
+            u.DeviceUserId, u.SourceDeviceId, u.Name,
+            HasFace = u.Templates.Any(t => t.Type == TemplateType.Face),
+            Fp = u.Templates.Count(t => t.Type == TemplateType.Fingerprint)
+        }).ToListAsync();
+        var profiles = await db.UserProfiles.ToDictionaryAsync(p => p.Pin, p => p.DisplayName);
+
+        _rows = raw.GroupBy(x => x.DeviceUserId)
+            .Select(g => new UserRow(g.Key, profiles.GetValueOrDefault(g.Key),
+                g.Select(x => new Instance(x.SourceDeviceId, x.Name, x.HasFace, x.Fp)).ToList()))
+            .OrderBy(r => r.Pin.Length).ThenBy(r => r.Pin)
+            .ToList();
+
+        foreach (var r in _rows)
+            _edited[r.Pin] = _edited.TryGetValue(r.Pin, out var v) && !string.IsNullOrWhiteSpace(v) ? v : (r.Default ?? SuggestName(r));
+    }
+
+    private static string? SuggestName(UserRow r)
+        => r.Instances.Select(i => i.Name).Where(n => !string.IsNullOrWhiteSpace(n) && n != r.Pin)
+            .GroupBy(n => n).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key;
+
+    private IEnumerable<UserRow> Filtered
+    {
+        get
+        {
+            var rows = (IEnumerable<UserRow>)(_rows ?? new List<UserRow>());
+            if (_deviceFilter > 0) rows = rows.Where(r => r.Instances.Any(i => i.DeviceId == _deviceFilter));
+            if (!string.IsNullOrWhiteSpace(_filter))
+                rows = rows.Where(r => r.Pin.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                    || r.Instances.Any(i => i.Name?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)
+                    || (_edited.GetValueOrDefault(r.Pin)?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false));
+            return rows;
+        }
+    }
+
+    private bool AllVisibleSelected => Filtered.Any() && Filtered.All(r => _selected.Contains(r.Pin));
+    private void ToggleAll(ChangeEventArgs e) { var on = (bool)e.Value!; foreach (var r in Filtered) { if (on) _selected.Add(r.Pin); else _selected.Remove(r.Pin); } }
+    private void Select(string pin, bool on) { if (on) _selected.Add(pin); else _selected.Remove(pin); }
+    private void Target(int id, bool on) { if (on) _targets.Add(id); else _targets.Remove(id); }
+    private void AddTarget(int id, bool on) { if (on) _addTargets.Add(id); else _addTargets.Remove(id); }
+    private void UseName(string pin, string? name) => _edited[pin] = name;
+    private void OpenAdd() { _newPin = ""; _newName = ""; _addTargets.Clear(); _addEnroll = "none"; _adding = true; }
+
+    private async Task SaveNameAsync(string pin)
+    {
+        await UpsertNameAsync(pin, _edited.GetValueOrDefault(pin));
+        Flash($"Default name for {pin} saved.", "success");
+        await LoadAsync();
+    }
+
+    private async Task UpsertNameAsync(string pin, string? name)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        var p = await db.UserProfiles.FirstOrDefaultAsync(x => x.Pin == pin);
+        if (p is null) { p = new UserProfile { Pin = pin }; db.UserProfiles.Add(p); }
+        p.DisplayName = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        p.UpdatedUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+    }
+
+    private async Task ApplyNameAsync(string pin)
+    {
+        await UpsertNameAsync(pin, _edited.GetValueOrDefault(pin));
+        var row = _rows!.First(r => r.Pin == pin);
+        int n = 0;
+        foreach (var inst in row.Instances) { await Jobs.QueueApplyNameAsync(inst.DeviceId, pin); n++; }
+        Flash($"Queued {n} name-update job(s) for {pin}.", "success");
+    }
+
+    private async Task ApplySelectedAsync()
+    {
+        int n = 0;
+        foreach (var pin in _selected.ToList())
+        {
+            await UpsertNameAsync(pin, _edited.GetValueOrDefault(pin));
+            if (string.IsNullOrWhiteSpace(_edited.GetValueOrDefault(pin))) continue;
+            foreach (var inst in _rows!.First(r => r.Pin == pin).Instances)
+            { await Jobs.QueueApplyNameAsync(inst.DeviceId, pin); n++; }
+        }
+        Flash($"Queued {n} name-update job(s) for {_selected.Count} user(s).", "success");
+        await LoadAsync();
+    }
+
+    // ---- copy ----
+    private async Task CopyUserAsync(string pin)
+    {
+        var row = _rows!.First(r => r.Pin == pin);
+        var (n, skip) = await QueueCopyForRowAsync(row);
+        Flash($"Queued {n} copy job(s) for {pin}" + (skip > 0 ? $" ({skip} target(s) had no source data)." : "."), "success");
+    }
+
+    private async Task CopySelectedAsync()
+    {
+        int n = 0, skip = 0;
+        foreach (var pin in _selected.ToList())
+        {
+            var (a, b) = await QueueCopyForRowAsync(_rows!.First(r => r.Pin == pin));
+            n += a; skip += b;
+        }
+        Flash($"Queued {n} copy job(s) to {_targets.Count} machine(s)" + (skip > 0 ? $" ({skip} skipped)." : "."), "success");
+    }
+
+    private async Task<(int queued, int skipped)> QueueCopyForRowAsync(UserRow row)
+    {
+        int n = 0, skip = 0;
+        foreach (var target in _targets)
+        {
+            var src = BestSource(row, target);
+            if (src is null) { skip++; continue; }          // no other machine has this user's data
+            await Jobs.QueueSyncCopyUserAsync(src.Value, target, row.Pin);
+            n++;
+        }
+        return (n, skip);
+    }
+
+    // ---- enroll ----
+    private async Task EnrollUserAsync(string pin)
+    {
+        var row = _rows!.First(r => r.Pin == pin);
+        int n = await QueueEnrollForRowAsync(row);
+        Flash($"Queued {n} {_enrollType} enrollment(s) for {pin}. Ask the person to enroll at the terminal(s).", "success");
+    }
+
+    private async Task EnrollSelectedAsync()
+    {
+        int n = 0;
+        foreach (var pin in _selected.ToList())
+            n += await QueueEnrollForRowAsync(_rows!.First(r => r.Pin == pin));
+        Flash($"Queued {n} {_enrollType} enrollment(s) for {_selected.Count} user(s).", "success");
+    }
+
+    private async Task<int> QueueEnrollForRowAsync(UserRow row)
+    {
+        int n = 0;
+        foreach (var target in _targets)
+        {
+            // Ensure the user exists on the target before enrolling.
+            if (!row.Instances.Any(i => i.DeviceId == target))
+                await Jobs.QueueCreateUserAsync(target, row.Pin);
+            if (_enrollType == "face") await Jobs.QueueEnrollFaceAsync(target, row.Pin);
+            else await Jobs.QueueEnrollFingerAsync(target, row.Pin);
+            n++;
+        }
+        return n;
+    }
+
+    // ---- add user ----
+    private async Task AddUserAsync()
+    {
+        var pin = _newPin.Trim();
+        if (string.IsNullOrWhiteSpace(pin) || _addTargets.Count == 0) return;
+
+        await UpsertNameAsync(pin, _newName);
+
+        // Create a local record for each target so the user shows immediately (the device push reconciles it).
+        await using (var db = DbFactory.CreateDbContext())
+        {
+            foreach (var did in _addTargets)
+            {
+                if (!await db.EnrolledUsers.AnyAsync(u => u.SourceDeviceId == did && u.DeviceUserId == pin))
+                    db.EnrolledUsers.Add(new EnrolledUser { SourceDeviceId = did, DeviceUserId = pin,
+                        Name = string.IsNullOrWhiteSpace(_newName) ? null : _newName.Trim(), LastDownloadedUtc = DateTime.UtcNow });
+            }
+            await db.SaveChangesAsync();
+        }
+
+        int created = 0, enrolled = 0;
+        foreach (var did in _addTargets)
+        {
+            await Jobs.QueueCreateUserAsync(did, pin); created++;
+            if (_addEnroll == "finger") { await Jobs.QueueEnrollFingerAsync(did, pin); enrolled++; }
+            else if (_addEnroll == "face") { await Jobs.QueueEnrollFaceAsync(did, pin); enrolled++; }
+        }
+        _adding = false;
+        Flash($"Queued create on {created} machine(s)" +
+              (enrolled > 0 ? $" and {enrolled} {_addEnroll} enrollment(s). Ask the person to enroll at the terminal(s)." : "."),
+              "success");
+        await LoadAsync();
+    }
+
+    private int? BestSource(UserRow row, int excludeDeviceId)
+        => row.Instances.Where(i => i.DeviceId != excludeDeviceId && (i.HasFace || i.Fp > 0))
+            .OrderByDescending(i => i.HasFace).ThenByDescending(i => i.Fp)
+            .Select(i => (int?)i.DeviceId).FirstOrDefault();
+
+    private System.Threading.Timer? _flashTimer;
+    private void Flash(string m, string k)
+    {
+        _flash = m; _flashKind = k;
+        _flashTimer?.Dispose();
+        if (k == "success")
+            _flashTimer = new System.Threading.Timer(_ => InvokeAsync(() => { _flash = null; StateHasChanged(); }),
+                null, 4000, System.Threading.Timeout.Infinite);
+    }
+    private async void OnJobChanged(int jobId) => await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+    public void Dispose() { Notifier.JobChanged -= OnJobChanged; _flashTimer?.Dispose(); }
+}

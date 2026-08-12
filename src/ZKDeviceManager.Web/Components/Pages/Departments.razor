@@ -1,0 +1,102 @@
+@page "/departments"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Departments</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Departments / Sites</h1>
+    <button class="btn btn-primary btn-sm" @onclick="() => Edit(new Department())"><span class="bi bi-plus-lg"></span> Add</button>
+</div>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-success alert-dismissible">@_flash <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
+}
+
+@if (_items is null)
+{
+    <p><em>Loading…</em></p>
+}
+else
+{
+    <table class="table table-sm table-hover align-middle" style="max-width:640px">
+        <thead><tr><th>Name</th><th>Code</th><th style="width:120px">Employees</th><th class="text-end"></th></tr></thead>
+        <tbody>
+            @foreach (var d in _items)
+            {
+                <tr>
+                    <td class="fw-semibold">@d.Name</td>
+                    <td>@(d.Code ?? "—")</td>
+                    <td>@_counts.GetValueOrDefault(d.Id)</td>
+                    <td class="text-end text-nowrap">
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => Edit(d)"><span class="bi bi-pencil"></span></button>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(d)"><span class="bi bi-trash"></span></button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@if (_editing is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header"><h5 class="modal-title">@(_editing.Id == 0 ? "Add" : "Edit") department</h5>
+                    <button type="button" class="btn-close" @onclick="() => _editing = null"></button></div>
+                <div class="modal-body">
+                    <label class="form-label small mb-0">Name</label>
+                    <input class="form-control form-control-sm mb-2" @bind="_editing.Name" />
+                    <label class="form-label small mb-0">Code (optional)</label>
+                    <input class="form-control form-control-sm" @bind="_editing.Code" />
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => _editing = null">Cancel</button>
+                    <button class="btn btn-primary" disabled="@string.IsNullOrWhiteSpace(_editing.Name)" @onclick="SaveAsync">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<Department>? _items;
+    private Dictionary<int, int> _counts = new();
+    private Department? _editing;
+    private string? _flash;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _items = await db.Departments.OrderBy(d => d.Name).ToListAsync();
+        _counts = await db.Employees.Where(e => e.DepartmentId != null)
+            .GroupBy(e => e.DepartmentId!.Value).Select(g => new { g.Key, C = g.Count() })
+            .ToDictionaryAsync(x => x.Key, x => x.C);
+    }
+
+    private void Edit(Department d) => _editing = new Department { Id = d.Id, Name = d.Name, Code = d.Code };
+
+    private async Task SaveAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        if (_editing!.Id == 0) db.Departments.Add(_editing);
+        else { var e = await db.Departments.FirstAsync(x => x.Id == _editing.Id); e.Name = _editing.Name; e.Code = _editing.Code; }
+        try { await db.SaveChangesAsync(); _flash = "Saved."; }
+        catch (DbUpdateException) { _flash = "A department with that name already exists."; }
+        _editing = null;
+        await LoadAsync();
+    }
+
+    private async Task DeleteAsync(Department d)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        db.Departments.Remove(await db.Departments.FirstAsync(x => x.Id == d.Id));
+        await db.SaveChangesAsync();
+        _flash = $"Deleted {d.Name}.";
+        await LoadAsync();
+    }
+}

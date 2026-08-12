@@ -1,0 +1,43 @@
+<style>
+    .sidebar { background: #22303f !important; }
+    .sidebar .top-row { background: rgba(0,0,0,0.25) !important; }
+    .sidebar .navbar-brand { color: #ffffff !important; font-weight: 600; }
+    .sidebar .nav-section { color: #8fa1b3 !important; font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; padding: .8rem 1.1rem .2rem; }
+    .sidebar .nav-link { color: #eef2f6 !important; font-size: .875rem; padding: .4rem 1.1rem; display: flex; align-items: center; gap: .6rem; border-left: 3px solid transparent; }
+    .sidebar .nav-link .bi { color: #9fb0c3 !important; font-size: 1rem; width: 1.15rem; text-align: center; }
+    .sidebar .nav-link:hover { background-color: #2f4257 !important; color: #ffffff !important; }
+    .sidebar .nav-link:hover .bi { color: #ffffff !important; }
+    .sidebar .nav-link.active { background-color: #2f4257 !important; color: #ffffff !important; border-left-color: #4aa3f0 !important; font-weight: 600; }
+    .sidebar .nav-link.active .bi { color: #7cc0ff !important; }
+</style>
+
+<div class="top-row ps-3 navbar navbar-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="">ZK Device Manager</a>
+    </div>
+</div>
+
+<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+
+<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
+    <nav class="nav flex-column">
+        <NavLink class="nav-link" href="" Match="NavLinkMatch.All"><i class="bi bi-speedometer2"></i> Dashboard</NavLink>
+        <NavLink class="nav-link" href="devices"><i class="bi bi-hdd-network"></i> Devices</NavLink>
+        <NavLink class="nav-link" href="employees"><i class="bi bi-person-vcard"></i> Employees</NavLink>
+        <NavLink class="nav-link" href="users"><i class="bi bi-people"></i> Users (devices)</NavLink>
+        <NavLink class="nav-link" href="data"><i class="bi bi-fingerprint"></i> User Templates</NavLink>
+        <NavLink class="nav-link" href="coverage"><i class="bi bi-shield-check"></i> Coverage</NavLink>
+        <NavLink class="nav-link" href="template-history"><i class="bi bi-clock-history"></i> Template History</NavLink>
+        <NavLink class="nav-link" href="attendance-report"><i class="bi bi-bar-chart"></i> Attendance Report</NavLink>
+        <NavLink class="nav-link" href="attendance"><i class="bi bi-card-list"></i> Attendance Log</NavLink>
+        <NavLink class="nav-link" href="jobs"><i class="bi bi-list-task"></i> Jobs</NavLink>
+
+        <div class="nav-section">Setup</div>
+        <NavLink class="nav-link" href="directory"><i class="bi bi-person-lines-fill"></i> Import from AD</NavLink>
+        <NavLink class="nav-link" href="departments"><i class="bi bi-diagram-3"></i> Departments</NavLink>
+        <NavLink class="nav-link" href="shifts"><i class="bi bi-calendar-week"></i> Shifts</NavLink>
+        <NavLink class="nav-link" href="holidays"><i class="bi bi-calendar-event"></i> Holidays</NavLink>
+        <NavLink class="nav-link" href="schedule"><i class="bi bi-alarm"></i> Automation</NavLink>
+        <NavLink class="nav-link" href="audit"><i class="bi bi-shield-lock"></i> Audit</NavLink>
+    </nav>
+</div>

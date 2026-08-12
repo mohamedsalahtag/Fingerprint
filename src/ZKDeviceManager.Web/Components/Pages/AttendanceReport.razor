@@ -1,0 +1,129 @@
+@page "/attendance-report"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Attendance Report</PageTitle>
+
+<h1 class="h3 mb-3">Attendance Report</h1>
+
+<div class="row g-2 mb-3 align-items-end">
+    <div class="col-md-2"><label class="form-label mb-0 small">From</label>
+        <input type="date" class="form-control form-control-sm" @bind="_from" /></div>
+    <div class="col-md-2"><label class="form-label mb-0 small">To</label>
+        <input type="date" class="form-control form-control-sm" @bind="_to" /></div>
+    <div class="col-md-3"><label class="form-label mb-0 small">Department</label>
+        <select class="form-select form-select-sm" @bind="_dept">
+            <option value="0">All</option>
+            @foreach (var d in _depts) { <option value="@d.Id">@d.Name</option> }
+        </select></div>
+    <div class="col-md-3"><label class="form-label mb-0 small">Employee (id/name)</label>
+        <input class="form-control form-control-sm" @bind="_search" /></div>
+    <div class="col-md-2 d-grid gap-1">
+        <button class="btn btn-primary btn-sm" disabled="@_busy" @onclick="RunAsync"><span class="bi bi-play-fill"></span> Run</button>
+        <a class="btn btn-outline-success btn-sm @(_result is null ? "disabled" : "")" href="@ExportUrl()"><span class="bi bi-file-earmark-excel"></span> Excel</a>
+    </div>
+</div>
+
+@if (_busy) { <p><span class="spinner-border spinner-border-sm"></span> Calculating…</p> }
+else if (_result is not null)
+{
+    <ul class="nav nav-tabs mb-3">
+        <li class="nav-item"><button class="nav-link @(_tab == 0 ? "active" : "")" @onclick="() => _tab = 0">Summary (@_result.Summaries.Count)</button></li>
+        <li class="nav-item"><button class="nav-link @(_tab == 1 ? "active" : "")" @onclick="() => _tab = 1">Daily detail (@_result.Days.Count)</button></li>
+    </ul>
+
+    @if (_tab == 0)
+    {
+        @if (_result.Summaries.Count == 0) { <div class="alert alert-info">No active employees match. Add employees on the Employees page first.</div> }
+        else
+        {
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead><tr><th>User id</th><th>Name</th><th>Department</th>
+                    <th class="text-end">Present</th><th class="text-end">Late</th><th class="text-end">Absent</th>
+                    <th class="text-end">Incomplete</th><th class="text-end">Off/Hol</th><th class="text-end">Hours</th></tr></thead>
+                <tbody>
+                    @foreach (var s in _result.Summaries)
+                    {
+                        <tr>
+                            <td>@s.Pin</td><td class="fw-semibold">@s.Name</td><td>@s.Department</td>
+                            <td class="text-end">@s.Present</td>
+                            <td class="text-end @(s.Late > 0 ? "text-warning fw-bold" : "")">@s.Late</td>
+                            <td class="text-end @(s.Absent > 0 ? "text-danger fw-bold" : "")">@s.Absent</td>
+                            <td class="text-end">@s.Incomplete</td>
+                            <td class="text-end text-muted">@s.OffOrHoliday</td>
+                            <td class="text-end">@s.TotalHours.ToString("0.0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        }
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead><tr><th>Date</th><th>Day</th><th>User id</th><th>Name</th><th>Department</th>
+                    <th>Shift</th><th>In</th><th>Out</th><th class="text-end">Hours</th><th class="text-end">Punches</th><th>Status</th></tr></thead>
+                <tbody>
+                    @foreach (var d in _result.Days)
+                    {
+                        <tr>
+                            <td>@d.Date.ToString("yyyy-MM-dd")</td>
+                            <td class="small text-muted">@d.DayName</td>
+                            <td>@d.Pin</td><td>@d.Name</td><td>@d.Department</td><td class="small">@d.Shift</td>
+                            <td>@(d.In?.ToString("HH:mm") ?? "—")</td>
+                            <td>@(d.Out?.ToString("HH:mm") ?? "—")</td>
+                            <td class="text-end">@(d.Hours > 0 ? d.Hours.ToString("0.0") : "—")</td>
+                            <td class="text-end">@d.Punches</td>
+                            <td><span class="badge bg-@StatusColor(d.Status)">@d.Status</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+@code {
+    private DateTime _from = DateTime.Today.AddDays(-7);
+    private DateTime _to = DateTime.Today;
+    private int _dept;
+    private string _search = "";
+    private List<Department> _depts = new();
+    private AttendanceReportResult? _result;
+    private bool _busy;
+    private int _tab;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _depts = await db.Departments.OrderBy(d => d.Name).ToListAsync();
+    }
+
+    private async Task RunAsync()
+    {
+        _busy = true; _result = null;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            _result = await AttendanceReportBuilder.BuildAsync(db,
+                DateOnly.FromDateTime(_from), DateOnly.FromDateTime(_to), _dept, _search);
+        }
+        finally { _busy = false; }
+    }
+
+    private string ExportUrl()
+    {
+        var q = new List<string> { $"from={_from:yyyy-MM-dd}", $"to={_to:yyyy-MM-dd}", $"dept={_dept}" };
+        if (!string.IsNullOrWhiteSpace(_search)) q.Add($"search={Uri.EscapeDataString(_search)}");
+        return "/export/attendance-report?" + string.Join("&", q);
+    }
+
+    private static string StatusColor(string s) => s switch
+    {
+        "Present" => "success", "Late" => "warning", "Absent" => "danger",
+        "Incomplete" => "info", "Holiday" => "secondary", _ => "light"
+    };
+}

@@ -1,0 +1,157 @@
+@page "/"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+@implements IDisposable
+
+<PageTitle>Dashboard</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Dashboard</h1>
+    <span class="text-muted small">Live · refreshes every 15s</span>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-6 col-md-3"><div class="card text-center"><div class="card-body">
+        <div class="display-6">@_onlineDevices/@_totalDevices</div><div class="text-muted">Devices online</div></div></div></div>
+    <div class="col-6 col-md-3"><div class="card text-center"><div class="card-body">
+        <div class="display-6">@_activeEmployees</div><div class="text-muted">Active employees</div></div></div></div>
+    <div class="col-6 col-md-3"><div class="card text-center"><div class="card-body">
+        <div class="display-6 text-success">@_presentToday</div><div class="text-muted">Punched today</div></div></div></div>
+    <div class="col-6 col-md-3"><div class="card text-center"><div class="card-body">
+        <div class="display-6">@_punchesToday</div><div class="text-muted">Punches today</div></div></div></div>
+</div>
+
+@if (_alerts.Count > 0)
+{
+    <div class="alert alert-warning">
+        <strong><span class="bi bi-exclamation-triangle-fill"></span> Alerts</strong>
+        <ul class="mb-0 mt-1">@foreach (var a in _alerts) { <li>@a</li> }</ul>
+    </div>
+}
+
+<div class="row g-3">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header">Devices</div>
+            <div class="table-responsive"><table class="table table-sm mb-0 align-middle">
+                <thead><tr><th>Name</th><th>PUSH</th><th class="text-end">Users</th><th class="text-end">Faces</th><th>Capacity</th></tr></thead>
+                <tbody>
+                    @foreach (var d in _devices)
+                    {
+                        var push = PushBadge(d);
+                        <tr>
+                            <td class="fw-semibold"><a href="devices/@d.Id" class="text-decoration-none">@d.Name</a></td>
+                            <td>@((MarkupString)push)</td>
+                            <td class="text-end">@_stats.GetValueOrDefault(d.Id).Users</td>
+                            <td class="text-end">@_stats.GetValueOrDefault(d.Id).UsersWithFaces</td>
+                            <td style="min-width:120px">@((MarkupString)CapacityBar(d))</td>
+                        </tr>
+                    }
+                </tbody></table></div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between"><span>Recent punches (today)</span>
+                <a class="small" href="attendance-report">Report →</a></div>
+            <div class="card-body p-0">
+                @if (_recent.Count == 0) { <p class="text-muted small p-3 mb-0">No punches yet today.</p> }
+                else
+                {
+                    <table class="table table-sm mb-0"><tbody>
+                        @foreach (var p in _recent)
+                        {
+                            <tr><td class="text-nowrap small">@p.Time.ToString("HH:mm:ss")</td>
+                                <td class="fw-semibold">@p.Name</td>
+                                <td class="small text-muted">@p.Device</td></tr>
+                        }
+                    </tbody></table>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private record Punch(DateTime Time, string Name, string Device);
+
+    private int _totalDevices, _onlineDevices, _activeEmployees, _presentToday, _punchesToday;
+    private List<Device> _devices = new();
+    private Dictionary<int, DeviceStats> _stats = new();
+    private Dictionary<string, DateTime> _push = new();
+    private List<Punch> _recent = new();
+    private readonly List<string> _alerts = new();
+    private System.Threading.Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _timer = new System.Threading.Timer(_ => InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); }),
+            null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
+    }
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _devices = await db.Devices.OrderBy(d => d.Name).ToListAsync();
+        _stats = await DeviceStatsQuery.ForAllAsync(db);
+        _push = await db.PushDevices.ToDictionaryAsync(p => p.SerialNumber, p => p.LastSeenUtc);
+        _totalDevices = _devices.Count;
+        _onlineDevices = _devices.Count(d => PushOnline(d));
+        _activeEmployees = await db.Employees.CountAsync(e => e.Active);
+
+        var todayUtc = DateTime.Today;
+        var todayLogs = await db.AttendanceLogs.Where(l => l.Timestamp >= todayUtc)
+            .Select(l => new { l.DeviceUserId, l.Timestamp, l.DeviceName }).ToListAsync();
+        _punchesToday = todayLogs.Count;
+        _presentToday = todayLogs.Select(l => l.DeviceUserId).Distinct().Count();
+
+        var names = await UserDirectory.BestNamesAsync(db);
+        _recent = todayLogs.OrderByDescending(l => l.Timestamp).Take(15)
+            .Select(l => new Punch(l.Timestamp, names.GetValueOrDefault(l.DeviceUserId, l.DeviceUserId), l.DeviceName ?? "")).ToList();
+
+        // Alerts
+        _alerts.Clear();
+        foreach (var d in _devices)
+        {
+            var seen = PushSeen(d);
+            if (seen is null) _alerts.Add($"{d.Name}: never connected via PUSH.");
+            else if ((DateTime.UtcNow - seen.Value).TotalMinutes > 5)
+                _alerts.Add($"{d.Name}: no PUSH contact for {(int)(DateTime.UtcNow - seen.Value).TotalMinutes} min (last {seen.Value.ToLocalTime():g}).");
+            foreach (var (label, count, cap) in Capacities(d))
+                if (cap > 0 && count >= cap * 0.9)
+                    _alerts.Add($"{d.Name}: {label} storage {count}/{cap} (over 90%).");
+        }
+    }
+
+    private DateTime? PushSeen(Device d) =>
+        !string.IsNullOrEmpty(d.SerialNumber) && _push.TryGetValue(d.SerialNumber, out var t) ? t : null;
+    private bool PushOnline(Device d) { var s = PushSeen(d); return s is not null && (DateTime.UtcNow - s.Value).TotalSeconds < 60; }
+
+    private string PushBadge(Device d)
+    {
+        var s = PushSeen(d);
+        if (s is null) return "<span class='badge bg-warning text-dark'>not set up</span>";
+        return (DateTime.UtcNow - s.Value).TotalSeconds < 60
+            ? "<span class='badge bg-success'>online</span>"
+            : "<span class='badge bg-danger'>offline</span>";
+    }
+
+    private static IEnumerable<(string, int, int)> Capacities(Device d) => new[]
+    {
+        ("users", d.DevUserCount ?? 0, d.DevUserCapacity ?? 0),
+        ("fingerprint", d.DevFpCount ?? 0, d.DevFpCapacity ?? 0),
+        ("face", d.DevFaceCount ?? 0, d.DevFaceCapacity ?? 0),
+    };
+
+    private static string CapacityBar(Device d)
+    {
+        if (d.DevUserCapacity is null or 0) return "<span class='text-muted small'>read info</span>";
+        int pct = (int)Math.Min(100, 100.0 * (d.DevUserCount ?? 0) / d.DevUserCapacity.Value);
+        var color = pct >= 90 ? "danger" : pct >= 75 ? "warning" : "success";
+        return $"<div class='progress' style='height:14px' title='users {d.DevUserCount}/{d.DevUserCapacity}'>" +
+               $"<div class='progress-bar bg-{color}' style='width:{pct}%'>{pct}%</div></div>";
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

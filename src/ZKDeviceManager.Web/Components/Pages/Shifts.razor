@@ -1,0 +1,129 @@
+@page "/shifts"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Shifts</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Shifts</h1>
+    <button class="btn btn-primary btn-sm" @onclick="() => Edit(new Shift())"><span class="bi bi-plus-lg"></span> Add</button>
+</div>
+
+@if (_flash is not null)
+{
+    <div class="alert alert-success alert-dismissible">@_flash <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
+}
+
+@if (_items is null) { <p><em>Loading…</em></p> }
+else
+{
+    <table class="table table-sm table-hover align-middle" style="max-width:760px">
+        <thead><tr><th>Name</th><th>Start</th><th>End</th><th>Grace</th><th>Working days</th><th class="text-end"></th></tr></thead>
+        <tbody>
+            @foreach (var s in _items)
+            {
+                <tr>
+                    <td class="fw-semibold">@s.Name</td>
+                    <td>@s.Start.ToString("HH:mm")</td>
+                    <td>@s.End.ToString("HH:mm")</td>
+                    <td>@s.GraceMinutes min</td>
+                    <td class="small">@DaysLabel(s.WorkDays)</td>
+                    <td class="text-end text-nowrap">
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => Edit(s)"><span class="bi bi-pencil"></span></button>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(s)"><span class="bi bi-trash"></span></button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@if (_editing is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header"><h5 class="modal-title">@(_editing.Id == 0 ? "Add" : "Edit") shift</h5>
+                    <button type="button" class="btn-close" @onclick="() => _editing = null"></button></div>
+                <div class="modal-body">
+                    <label class="form-label small mb-0">Name</label>
+                    <input class="form-control form-control-sm mb-2" @bind="_editing.Name" />
+                    <div class="row g-2">
+                        <div class="col-4"><label class="form-label small mb-0">Start</label>
+                            <input type="time" class="form-control form-control-sm" @bind="_start" /></div>
+                        <div class="col-4"><label class="form-label small mb-0">End</label>
+                            <input type="time" class="form-control form-control-sm" @bind="_end" /></div>
+                        <div class="col-4"><label class="form-label small mb-0">Grace (min)</label>
+                            <input type="number" class="form-control form-control-sm" @bind="_editing.GraceMinutes" /></div>
+                    </div>
+                    <label class="form-label small mb-0 mt-2">Working days</label>
+                    <div>
+                        @for (int i = 0; i < 7; i++)
+                        {
+                            var idx = i;
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="wd@(idx)"
+                                       checked="@(_days[idx])" @onchange="e => _days[idx] = (bool)e.Value!" />
+                                <label class="form-check-label small" for="wd@(idx)">@DayName(idx)</label>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => _editing = null">Cancel</button>
+                    <button class="btn btn-primary" disabled="@string.IsNullOrWhiteSpace(_editing.Name)" @onclick="SaveAsync">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<Shift>? _items;
+    private Shift? _editing;
+    private string? _flash;
+    private TimeOnly _start, _end;
+    private readonly bool[] _days = new bool[7];
+
+    private static readonly string[] Names = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    private static string DayName(int i) => Names[i];
+    private static string DaysLabel(string mask) =>
+        string.Join(" ", Enumerable.Range(0, 7).Where(i => i < mask.Length && mask[i] == '1').Select(i => Names[i]));
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = DbFactory.CreateDbContext();
+        _items = await db.Shifts.OrderBy(s => s.Name).ToListAsync();
+    }
+
+    private void Edit(Shift s)
+    {
+        _editing = new Shift { Id = s.Id, Name = s.Name, Start = s.Start, End = s.End, GraceMinutes = s.GraceMinutes, WorkDays = s.WorkDays };
+        _start = s.Start; _end = s.End;
+        for (int i = 0; i < 7; i++) _days[i] = i < s.WorkDays.Length && s.WorkDays[i] == '1';
+    }
+
+    private async Task SaveAsync()
+    {
+        _editing!.Start = _start; _editing.End = _end;
+        _editing.WorkDays = string.Concat(_days.Select(b => b ? '1' : '0'));
+        await using var db = DbFactory.CreateDbContext();
+        if (_editing.Id == 0) db.Shifts.Add(_editing);
+        else { var e = await db.Shifts.FirstAsync(x => x.Id == _editing.Id);
+               e.Name = _editing.Name; e.Start = _editing.Start; e.End = _editing.End;
+               e.GraceMinutes = _editing.GraceMinutes; e.WorkDays = _editing.WorkDays; }
+        await db.SaveChangesAsync();
+        _flash = "Saved."; _editing = null;
+        await LoadAsync();
+    }
+
+    private async Task DeleteAsync(Shift s)
+    {
+        await using var db = DbFactory.CreateDbContext();
+        db.Shifts.Remove(await db.Shifts.FirstAsync(x => x.Id == s.Id));
+        await db.SaveChangesAsync();
+        _flash = $"Deleted {s.Name}."; await LoadAsync();
+    }
+}
