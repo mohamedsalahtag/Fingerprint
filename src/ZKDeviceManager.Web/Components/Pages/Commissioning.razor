@@ -1,0 +1,285 @@
+@page "/commissioning"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Commissioning</PageTitle>
+
+<style>
+    .cm-stat { border: 1px solid var(--bs-border-color); border-radius: .6rem; padding: .7rem .9rem; background: var(--bs-body-bg); }
+    .cm-stat .lab { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--bs-secondary-color); font-weight: 600; }
+    .cm-stat .num { font-size: 2rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .cm-stat .foot { font-size: .74rem; color: var(--bs-secondary-color); }
+    .cm-stat.ok .num { color: #12945a; } .cm-stat.wait .num { color: #b26a06; }
+    .cm-bar { height: 11px; border-radius: 99px; background: #f0e2c6; overflow: hidden; }
+    .cm-bar > span { display: block; height: 100%; background: #12945a; }
+    .cm-site { border: 1px solid var(--bs-border-color); border-radius: .55rem; padding: .55rem .7rem; }
+    .cm-site .nm { font-weight: 600; font-size: .9rem; }
+    .cm-site .frac { font-size: .8rem; color: var(--bs-secondary-color); }
+    .cm-site .mini { height: 7px; border-radius: 99px; background: #f0e2c6; overflow: hidden; margin-top: .35rem; }
+    .cm-site .mini > span { display: block; height: 100%; background: #12945a; }
+    .cm-mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
+    <h1 class="h3 mb-0">Commissioning</h1>
+    <div class="d-flex align-items-center gap-2">
+        <span class="text-muted small">Updated @_updated.ToLocalTime().ToString("HH:mm:ss") · auto every 30s</span>
+        <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync"><span class="bi bi-arrow-clockwise"></span></button>
+        <button class="btn btn-primary btn-sm" @onclick="() => OpenEdit(null)"><span class="bi bi-plus-lg"></span> Add device</button>
+    </div>
+</div>
+<p class="text-muted small mb-3">Migration progress: terminals from the master sheet that are pushing to the new server
+    (<span class="cm-mono">192.168.2.30:8770</span>) vs. still pending. A terminal turns green automatically once it connects.</p>
+
+@if (_rows is null) { <p><em>Loading…</em></p> }
+else
+{
+    <div class="row g-2 mb-3">
+        <div class="col-6 col-lg-3"><div class="cm-stat"><div class="lab">On the sheet</div><div class="num">@_total</div><div class="foot">terminals total</div></div></div>
+        <div class="col-6 col-lg-3"><div class="cm-stat ok"><div class="lab">Connected</div><div class="num">@_connected</div><div class="foot">pushing to new server</div></div></div>
+        <div class="col-6 col-lg-3"><div class="cm-stat wait"><div class="lab">Pending</div><div class="num">@_pending</div><div class="foot">not yet repointed</div></div></div>
+        <div class="col-6 col-lg-3"><div class="cm-stat"><div class="lab">Complete</div><div class="num">@_pct%</div><div class="foot">@_connected of @_total</div></div></div>
+    </div>
+
+    <div class="cm-bar mb-2"><span style="width:@(_pct)%"></span></div>
+    <p class="small text-muted mb-3"><b class="text-body">@_pending terminals</b> still point at the old server and record no attendance until repointed.
+        @if (_unlisted.Count > 0)
+        {
+            <span> Also @_unlisted.Count connected device(s) not on the sheet:
+            @foreach (var u in _unlisted) { <span class="badge bg-light text-dark border me-1 cm-mono">@u.Ip @(string.IsNullOrEmpty(u.Name) ? "" : "· " + u.Name)</span> }
+            <button class="btn btn-link btn-sm p-0 align-baseline" @onclick="() => AddUnlisted()">add them to the roster</button></span>
+        }
+    </p>
+
+    <h2 class="h6 mb-2">By site <span class="text-muted small fw-normal">— most pending first</span></h2>
+    <div class="row g-2 mb-4">
+        @foreach (var s in _siteBoard)
+        {
+            <div class="col-6 col-md-4 col-lg-3">
+                <div class="cm-site @(s.Connected == s.Total ? "border-success" : null)">
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="nm">@s.Site</span><span class="frac"><b class="text-body">@s.Connected</b>/@s.Total</span>
+                    </div>
+                    <div class="mini"><span style="width:@(s.Pct)%"></span></div>
+                    <div class="small text-muted mt-1">@(s.Connected == s.Total ? "✓ all connected" : s.Connected == 0 ? "none yet" : s.Pending + " pending")</div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="row g-2 mb-2 align-items-end">
+        <div class="col-auto">
+            <div class="btn-group btn-group-sm" role="group">
+                <button class="btn @(_filter == "pending" ? "btn-warning" : "btn-outline-secondary")" @onclick='() => _filter = "pending"'>Pending</button>
+                <button class="btn @(_filter == "connected" ? "btn-success" : "btn-outline-secondary")" @onclick='() => _filter = "connected"'>Connected</button>
+                <button class="btn @(_filter == "all" ? "btn-primary" : "btn-outline-secondary")" @onclick='() => _filter = "all"'>All</button>
+            </div>
+        </div>
+        <div class="col-auto"><select class="form-select form-select-sm" @bind="_site">
+            <option value="">All sites</option>
+            @foreach (var s in _siteNames) { <option value="@s">@s</option> }
+        </select></div>
+        <div class="col-md-3"><input class="form-control form-control-sm" placeholder="Search name / IP…" @bind="_q" @bind:event="oninput" /></div>
+        <div class="col text-end text-muted small">@Filtered.Count() shown</div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle">
+            <thead><tr><th style="width:110px">Status</th><th>Device</th><th>IP address</th><th>Site</th><th class="text-end"></th></tr></thead>
+            <tbody>
+                @foreach (var r in Filtered)
+                {
+                    <tr>
+                        <td>
+                            @if (r.Connected) { <span class="badge bg-success">Connected</span> }
+                            else { <span class="badge bg-warning text-dark">Pending</span> }
+                        </td>
+                        <td>
+                            <span class="fw-semibold">@r.Dev.Name</span>
+                            @if (r.Dev.VerifyIp) { <span class="badge bg-light text-warning border ms-1" title="IP transcribed from the sheet — verify">verify IP</span> }
+                            @if (r.Connected && !string.IsNullOrEmpty(r.AppName) && r.AppName != r.Dev.Name) { <div class="small text-muted">in app: @r.AppName</div> }
+                        </td>
+                        <td class="cm-mono">@r.Dev.Ip</td>
+                        <td>@r.Dev.Site</td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-secondary py-0 px-1" @onclick="() => OpenEdit(r.Dev)"><span class="bi bi-pencil"></span></button>
+                            <button class="btn btn-sm btn-outline-danger py-0 px-1" @onclick="() => _confirmDelete = r.Dev.Id"><span class="bi bi-trash"></span></button>
+                        </td>
+                    </tr>
+                }
+                @if (!Filtered.Any()) { <tr><td colspan="5" class="text-center text-muted py-3">No devices match.</td></tr> }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (_editing is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.4)">
+        <div class="modal-dialog"><div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">@(_editing.Id == 0 ? "Add expected device" : "Edit device")</h5>
+                <button type="button" class="btn-close" @onclick="() => _editing = null"></button></div>
+            <div class="modal-body">
+                <div class="mb-2"><label class="form-label small mb-0">Device name</label>
+                    <input class="form-control form-control-sm" @bind="_editing.Name" /></div>
+                <div class="mb-2"><label class="form-label small mb-0">IP address</label>
+                    <input class="form-control form-control-sm cm-mono" @bind="_editing.Ip" placeholder="10.65.70.xx" /></div>
+                <div class="mb-2"><label class="form-label small mb-0">Site</label>
+                    <input class="form-control form-control-sm" @bind="_editing.Site" list="cm-sites" />
+                    <datalist id="cm-sites">@foreach (var s in _siteNames) { <option value="@s" /> }</datalist></div>
+                <div class="form-check"><input class="form-check-input" type="checkbox" id="cm-vf" @bind="_editing.VerifyIp" />
+                    <label class="form-check-label small" for="cm-vf">IP needs verification</label></div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-secondary btn-sm" @onclick="() => _editing = null">Cancel</button>
+                <button class="btn btn-primary btn-sm" @onclick="SaveEdit">Save</button></div>
+        </div></div>
+    </div>
+}
+
+@if (_confirmDelete is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.4)">
+        <div class="modal-dialog modal-sm"><div class="modal-content">
+            <div class="modal-body">Remove this device from the roster?</div>
+            <div class="modal-footer"><button class="btn btn-secondary btn-sm" @onclick="() => _confirmDelete = null">Cancel</button>
+                <button class="btn btn-danger btn-sm" @onclick="DoDelete">Remove</button></div>
+        </div></div>
+    </div>
+}
+
+@code {
+    private record Row(ExpectedDevice Dev, bool Connected, string? AppName);
+    private record SiteStat(string Site, int Total, int Connected)
+    {
+        public int Pending => Total - Connected;
+        public int Pct => Total == 0 ? 0 : (int)Math.Round(Connected * 100.0 / Total);
+    }
+    private record Unlisted(string Ip, string Name);
+
+    private List<Row>? _rows;
+    private List<SiteStat> _siteBoard = new();
+    private List<string> _siteNames = new();
+    private List<Unlisted> _unlisted = new();
+    private int _total, _connected, _pending, _pct;
+    private DateTime _updated;
+
+    private string _filter = "pending";
+    private string _site = "";
+    private string _q = "";
+
+    private ExpectedDevice? _editing;
+    private int? _confirmDelete;
+
+    private System.Threading.Timer? _timer;
+    private bool _loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _timer = new System.Threading.Timer(async _ => { await LoadAsync(); await InvokeAsync(StateHasChanged); }, null, 30_000, 30_000);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+
+    private async Task LoadAsync()
+    {
+        if (_loading) return;
+        _loading = true;
+        try
+        {
+            await using var db = DbFactory.CreateDbContext();
+            var expected = await db.ExpectedDevices.OrderBy(x => x.Site).ThenBy(x => x.Name).ToListAsync();
+
+            // live connected IPs = any real device (registered or pushing)
+            var devByIp = await db.Devices.Where(d => d.IpAddress != null && d.IpAddress != "")
+                .Select(d => new { d.IpAddress, d.Name }).ToListAsync();
+            var pushIps = await db.PushDevices.Where(p => p.LastIp != null && p.LastIp != "")
+                .Select(p => p.LastIp!).ToListAsync();
+            var connectedIps = new HashSet<string>(devByIp.Select(d => d.IpAddress!), StringComparer.OrdinalIgnoreCase);
+            foreach (var ip in pushIps) connectedIps.Add(ip);
+            var nameByIp = devByIp.GroupBy(d => d.IpAddress!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().Name, StringComparer.OrdinalIgnoreCase);
+
+            _rows = expected.Select(e =>
+            {
+                var on = e.Ip != null && connectedIps.Contains(e.Ip);
+                return new Row(e, on, on && e.Ip != null ? nameByIp.GetValueOrDefault(e.Ip) : null);
+            }).ToList();
+
+            // connected devices with no matching roster entry (drop the loopback + old test device noise)
+            var rosterIps = new HashSet<string>(expected.Where(e => e.Ip != null).Select(e => e.Ip!), StringComparer.OrdinalIgnoreCase);
+            _unlisted = connectedIps.Where(ip => !rosterIps.Contains(ip) && ip != "127.0.0.1" && ip != "192.168.3.40")
+                .OrderBy(ip => ip).Select(ip => new Unlisted(ip, nameByIp.GetValueOrDefault(ip, ""))).ToList();
+
+            _total = _rows.Count;
+            _connected = _rows.Count(r => r.Connected);
+            _pending = _total - _connected;
+            _pct = _total == 0 ? 0 : (int)Math.Round(_connected * 100.0 / _total);
+
+            _siteBoard = _rows.GroupBy(r => r.Dev.Site)
+                .Select(g => new SiteStat(g.Key, g.Count(), g.Count(r => r.Connected)))
+                .OrderByDescending(s => s.Pending).ThenByDescending(s => s.Total).ToList();
+            _siteNames = _rows.Select(r => r.Dev.Site).Distinct().OrderBy(s => s).ToList();
+            _updated = DateTime.UtcNow;
+        }
+        finally { _loading = false; }
+    }
+
+    private IEnumerable<Row> Filtered
+    {
+        get
+        {
+            var rows = (IEnumerable<Row>)(_rows ?? new List<Row>());
+            rows = _filter switch
+            {
+                "pending" => rows.Where(r => !r.Connected),
+                "connected" => rows.Where(r => r.Connected),
+                _ => rows
+            };
+            if (!string.IsNullOrEmpty(_site)) rows = rows.Where(r => r.Dev.Site == _site);
+            if (!string.IsNullOrWhiteSpace(_q))
+                rows = rows.Where(r => r.Dev.Name.Contains(_q, StringComparison.OrdinalIgnoreCase)
+                    || (r.Dev.Ip ?? "").Contains(_q, StringComparison.OrdinalIgnoreCase));
+            return rows.OrderBy(r => r.Dev.Site).ThenBy(r => r.Dev.Name);
+        }
+    }
+
+    private void OpenEdit(ExpectedDevice? d) =>
+        _editing = d is null ? new ExpectedDevice { Site = _siteNames.FirstOrDefault() ?? "" }
+            : new ExpectedDevice { Id = d.Id, Name = d.Name, Ip = d.Ip, Site = d.Site, VerifyIp = d.VerifyIp };
+
+    private async Task SaveEdit()
+    {
+        if (_editing is null || string.IsNullOrWhiteSpace(_editing.Name)) return;
+        await using var db = DbFactory.CreateDbContext();
+        if (_editing.Id == 0)
+            db.ExpectedDevices.Add(new ExpectedDevice { Name = _editing.Name.Trim(), Ip = _editing.Ip?.Trim(), Site = _editing.Site.Trim(), VerifyIp = _editing.VerifyIp });
+        else
+        {
+            var e = await db.ExpectedDevices.FindAsync(_editing.Id);
+            if (e is not null) { e.Name = _editing.Name.Trim(); e.Ip = _editing.Ip?.Trim(); e.Site = _editing.Site.Trim(); e.VerifyIp = _editing.VerifyIp; }
+        }
+        await db.SaveChangesAsync();
+        _editing = null;
+        await LoadAsync();
+    }
+
+    private void AddUnlisted()
+    {
+        // pre-open the add form for the first unlisted connected device
+        var u = _unlisted.FirstOrDefault();
+        if (u is null) return;
+        _editing = new ExpectedDevice { Ip = u.Ip, Name = string.IsNullOrEmpty(u.Name) || u.Name.StartsWith("PUSH ") ? "" : u.Name, Site = "Riyadh" };
+    }
+
+    private async Task DoDelete()
+    {
+        if (_confirmDelete is null) return;
+        await using var db = DbFactory.CreateDbContext();
+        var e = await db.ExpectedDevices.FindAsync(_confirmDelete.Value);
+        if (e is not null) { db.ExpectedDevices.Remove(e); await db.SaveChangesAsync(); }
+        _confirmDelete = null;
+        await LoadAsync();
+    }
+}

@@ -23,6 +23,7 @@ public class AppDbContext : DbContext
     public DbSet<ScheduledTask> ScheduledTasks => Set<ScheduledTask>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<AppAccessUser> AppAccessUsers => Set<AppAccessUser>();
+    public DbSet<ExpectedDevice> ExpectedDevices => Set<ExpectedDevice>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -71,6 +72,7 @@ public class AppDbContext : DbContext
         b.Entity<ScheduledTask>(e => e.HasIndex(x => x.Type).IsUnique());
         b.Entity<AuditLog>(e => e.HasIndex(x => x.WhenUtc));
         b.Entity<AppAccessUser>(e => e.HasIndex(x => x.Login).IsUnique());
+        b.Entity<ExpectedDevice>(e => { e.HasIndex(x => x.Ip); e.HasIndex(x => x.Site); });
 
         b.Entity<Department>(e => e.HasIndex(x => x.Name).IsUnique());
         b.Entity<Holiday>(e => e.HasIndex(x => x.Date).IsUnique());

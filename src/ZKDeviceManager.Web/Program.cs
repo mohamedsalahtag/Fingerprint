@@ -84,6 +84,9 @@ using (var scope = app.Services.CreateScope())
         if (!await db.ScheduledTasks.AnyAsync(x => x.Type == tt))
             db.ScheduledTasks.Add(new ScheduledTask { Type = tt, Enabled = false, TimeOfDay = new TimeOnly(2, 0) });
     await db.SaveChangesAsync();
+
+    // Seed the commissioning roster (expected terminals from the master sheet) on first run.
+    await ZKDeviceManager.Web.Services.CommissioningSeed.SeedIfEmptyAsync(db);
 }
 
 if (!app.Environment.IsDevelopment())
