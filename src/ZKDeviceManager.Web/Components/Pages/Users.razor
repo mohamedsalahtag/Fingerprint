@@ -7,239 +7,370 @@
 
 <PageTitle>Users</PageTitle>
 
-<div class="d-flex justify-content-between align-items-center mb-2">
-    <h1 class="h3 mb-0">Users <small class="text-muted fs-6">(unified by user id across all machines)</small></h1>
-    <div>
+<style>
+    .us-toolbar { position: sticky; top: 0; z-index: 5; background: var(--bs-body-bg); border-bottom: 1px solid var(--bs-border-color); padding: .5rem 0; }
+    .us-actionbar { background: #eef4ff; border: 1px solid #b6d0f7; border-radius: .5rem; padding: .45rem .7rem; }
+    .us-chip { font-size: .72rem; border: 1px solid var(--bs-border-color); border-radius: 99px; padding: .05rem .5rem; background: var(--bs-secondary-bg); white-space: nowrap; }
+    .us-chip.warn { border-color: #e6c584; background: #fbf1dd; color: #8a5a00; }
+    .us-chip.ok { border-color: #8fd3ac; background: #e3f4ea; color: #0f7a48; }
+    .us-machines { max-height: 280px; overflow-y: auto; border: 1px solid var(--bs-border-color); border-radius: .4rem; }
+    .us-machines .form-check { padding: .15rem .4rem .15rem 1.9rem; margin: 0; }
+    .us-machines .form-check:hover { background: var(--bs-secondary-bg); }
+    .us-name-input { min-width: 170px; }
+    .us-table td { vertical-align: middle; }
+    .us-detail { background: var(--bs-secondary-bg); font-size: .8rem; }
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-1 flex-wrap gap-2">
+    <h1 class="h3 mb-0">Users <small class="text-muted fs-6">— one row per user id, across all machines</small></h1>
+    <div class="d-flex gap-1">
         <button class="btn btn-success btn-sm" @onclick="OpenAdd"><span class="bi bi-person-plus"></span> Add user</button>
-        <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync"><span class="bi bi-arrow-clockwise"></span> Refresh</button>
+        <a class="btn btn-outline-success btn-sm" href="@($"/export/users?device={_deviceFilter}")"><span class="bi bi-file-earmark-excel"></span> Excel</a>
+        <button class="btn btn-outline-secondary btn-sm" @onclick="LoadAsync"><span class="bi bi-arrow-clockwise"></span></button>
     </div>
 </div>
 
 @if (_flash is not null)
 {
-    <div class="alert alert-@_flashKind alert-dismissible">@_flash
+    <div class="alert alert-@_flashKind alert-dismissible py-2">@_flash
         <button type="button" class="btn-close" @onclick="() => _flash = null"></button></div>
 }
 
-@if (_rows is null)
-{
-    <p><em>Loading…</em></p>
-}
+@if (_rows is null) { <p><em>Loading…</em></p> }
 else
 {
-    <div class="card mb-3">
-        <div class="card-body py-2">
-            <div class="row g-2 align-items-end mb-2">
-                <div class="col-md-3">
-                    <label class="form-label mb-0 small">Browse machine</label>
-                    <select class="form-select form-select-sm" @bind="_deviceFilter">
-                        <option value="0">All machines</option>
-                        @foreach (var d in _devices.OrderBy(d => d.Value))
-                        {
-                            <option value="@d.Key">@d.Value</option>
-                        }
-                    </select>
-                </div>
-                <div class="col-md-9 d-flex align-items-end">
-                    <a class="btn btn-outline-success btn-sm" href="@($"/export/users?device={_deviceFilter}")">
-                        <span class="bi bi-file-earmark-excel"></span> Download users (Excel)
-                    </a>
-                </div>
+    <div class="us-toolbar mb-2">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label mb-0 small">Search user id / name</label>
+                <input class="form-control form-control-sm" placeholder="type to filter…" @bind="_filter" @bind:event="oninput" @bind:after="ResetPage" />
             </div>
-            <div class="row g-2 align-items-center">
-                <div class="col-md-3">
-                    <input class="form-control form-control-sm" placeholder="search user id / name…" @bind="_filter" @bind:event="oninput" />
-                </div>
-                <div class="col-md-6">
-                    <span class="small text-muted me-1">Target machines:</span>
-                    @foreach (var d in _devices.OrderBy(d => d.Value))
-                    {
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="checkbox" id="tgt@(d.Key)"
-                                   checked="@_targets.Contains(d.Key)" @onchange="e => Target(d.Key, (bool)e.Value!)" />
-                            <label class="form-check-label small" for="tgt@(d.Key)">@d.Value</label>
-                        </div>
-                    }
-                </div>
-                <div class="col-md-3">
-                    <span class="small text-muted me-1">Enroll:</span>
-                    <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="enroll" id="enF" checked="@(_enrollType == "finger")" @onchange="@(() => _enrollType = "finger")" />
-                        <label class="form-check-label small" for="enF">Fingerprint</label>
-                    </div>
-                    <div class="form-check form-check-inline">
-                        <input class="form-check-input" type="radio" name="enroll" id="enC" checked="@(_enrollType == "face")" @onchange="@(() => _enrollType = "face")" />
-                        <label class="form-check-label small" for="enC">Face</label>
-                    </div>
-                </div>
+            <div class="col-md-3">
+                <label class="form-label mb-0 small">Show</label>
+                <select class="form-select form-select-sm" @bind="_show" @bind:after="ResetPage">
+                    <option value="all">All users</option>
+                    <option value="conflict">⚠ Name conflicts (differ across machines)</option>
+                    <option value="nodefault">No unified name set</option>
+                    <option value="unnamed">Unnamed on some machine</option>
+                </select>
             </div>
-            <div class="mt-2 d-flex flex-wrap gap-2 align-items-center">
-                <span class="small text-muted">@_selected.Count selected ·</span>
-                <button class="btn btn-outline-primary btn-sm" disabled="@(_selected.Count == 0 || _targets.Count == 0)" @onclick="CopySelectedAsync">
-                    <span class="bi bi-box-arrow-in-right"></span> Copy selected → @_targets.Count machine(s)
-                </button>
-                <button class="btn btn-outline-danger btn-sm" disabled="@(_selected.Count == 0 || _targets.Count == 0)" @onclick="EnrollSelectedAsync">
-                    <span class="bi bi-fingerprint"></span> Enroll selected (@_enrollType) → @_targets.Count machine(s)
-                </button>
-                <button class="btn btn-outline-success btn-sm" disabled="@(_selected.Count == 0)" @onclick="ApplySelectedAsync">
-                    <span class="bi bi-people"></span> Apply names to machines
-                </button>
+            <div class="col-md-3">
+                <label class="form-label mb-0 small">On machine</label>
+                <select class="form-select form-select-sm" @bind="_deviceFilter" @bind:after="ResetPage">
+                    <option value="0">Any machine</option>
+                    @foreach (var d in DeviceList) { <option value="@d.Key">@d.Value</option> }
+                </select>
+            </div>
+            <div class="col-md-3 text-end">
+                <span class="small text-muted">@Filtered.Count() of @_rows.Count users</span>
             </div>
         </div>
     </div>
 
-    <p class="text-muted small">@Filtered.Count() of @_rows.Count users</p>
+    @if (_selected.Count > 0)
+    {
+        <div class="us-actionbar mb-2 d-flex flex-wrap gap-2 align-items-center">
+            <strong class="small">@_selected.Count selected</strong>
+            <button class="btn btn-sm btn-primary" @onclick="ConfirmUnifyAsync">
+                <span class="bi bi-magic"></span> Unify names on all their machines
+            </button>
+            <span class="vr"></span>
+            <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenPicker(PickAction.Copy)">
+                <span class="bi bi-box-arrow-in-right"></span> Copy to…
+            </button>
+            <button class="btn btn-sm btn-outline-warning" @onclick="() => OpenPicker(PickAction.Move)">
+                <span class="bi bi-arrow-left-right"></span> Move to…
+            </button>
+            <button class="btn btn-sm btn-outline-danger" @onclick="() => OpenPicker(PickAction.Remove)">
+                <span class="bi bi-trash"></span> Remove from…
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="() => OpenPicker(PickAction.Enroll)">
+                <span class="bi bi-fingerprint"></span> Enroll on…
+            </button>
+            <button class="btn btn-sm btn-link text-decoration-none ms-auto" @onclick="() => _selected.Clear()">clear</button>
+        </div>
+    }
+
     <div class="table-responsive">
-        <table class="table table-sm align-middle">
-            <thead>
+        <table class="table table-sm table-hover us-table align-middle">
+            <thead class="table-light">
                 <tr>
                     <th style="width:28px"><input type="checkbox" @onchange="ToggleAll" checked="@AllVisibleSelected" /></th>
-                    <th style="width:100px">User id</th>
-                    <th style="width:220px">Default name</th>
-                    <th>Names on machines</th>
-                    <th style="width:80px" class="text-center">Faces/FP</th>
-                    <th style="width:260px" class="text-end">Actions</th>
+                    <th style="width:110px">User id</th>
+                    <th style="width:240px">Unified name</th>
+                    <th style="width:150px">On machines</th>
+                    <th style="width:120px">Biometrics</th>
+                    <th class="text-end" style="width:150px">Actions</th>
                 </tr>
             </thead>
             <tbody>
-                @foreach (var r in Filtered)
+                @foreach (var r in Page)
                 {
-                    var conflict = r.DistinctNames.Count > 1;
                     <tr>
                         <td><input type="checkbox" checked="@_selected.Contains(r.Pin)" @onchange="e => Select(r.Pin, (bool)e.Value!)" /></td>
                         <td class="fw-semibold">@r.Pin</td>
                         <td>
-                            <div class="input-group input-group-sm">
-                                <input class="form-control" placeholder="@(r.Pin)" @bind="_edited[r.Pin]" />
-                                <button class="btn btn-outline-secondary" title="Save default name" @onclick="() => SaveNameAsync(r.Pin)">
-                                    <span class="bi bi-save"></span>
-                                </button>
+                            <div class="input-group input-group-sm us-name-input">
+                                <input class="form-control" placeholder="@Suggested(r)" @bind="_edited[r.Pin]" />
+                                <button class="btn btn-outline-secondary" title="Save unified name (app only)" @onclick="() => SaveNameAsync(r.Pin)"><span class="bi bi-save"></span></button>
+                                <button class="btn btn-outline-primary" title="Save and push to this user's machines" @onclick="() => ApplyNameAsync(r.Pin)"><span class="bi bi-send"></span></button>
                             </div>
                         </td>
                         <td>
-                            @foreach (var inst in r.Instances)
-                            {
-                                var nm = string.IsNullOrWhiteSpace(inst.Name) ? "—" : inst.Name;
-                                var isDefault = !string.IsNullOrWhiteSpace(r.Default) && nm == r.Default;
-                                <span class="badge me-1 mb-1 @(isDefault ? "text-bg-success" : conflict ? "text-bg-warning" : "text-bg-light border")"
-                                      role="button" title="Use this as the default name" @onclick="() => UseName(r.Pin, inst.Name)">
-                                    @_devices.GetValueOrDefault(inst.DeviceId, "?"): <strong>@nm</strong>
-                                </span>
-                            }
+                            <button class="btn btn-sm btn-link p-0 text-decoration-none" @onclick="() => Expand(r.Pin)">
+                                <span class="us-chip">@r.Instances.Count machine@(r.Instances.Count == 1 ? "" : "s")</span>
+                            </button>
+                            @if (r.DistinctNames.Count > 1) { <span class="us-chip warn ms-1" title="Name differs across machines">⚠ @r.DistinctNames.Count names</span> }
                         </td>
-                        <td class="text-center small">@(r.Instances.Any(i => i.HasFace) ? "✔" : "—") / @r.Instances.Max(i => i.Fp)</td>
+                        <td class="small">
+                            <span class="us-chip @(r.AnyFace ? "ok" : "")">Face @(r.AnyFace ? "✔" : "—")</span>
+                            <span class="us-chip @(r.MaxFp > 0 ? "ok" : "")">FP @(r.MaxFp > 0 ? r.MaxFp.ToString() : "—")</span>
+                        </td>
                         <td class="text-end text-nowrap">
-                            <button class="btn btn-sm btn-outline-success" title="Push the default name to the machines this user is on"
-                                    disabled="@string.IsNullOrWhiteSpace(_edited[r.Pin])" @onclick="() => ApplyNameAsync(r.Pin)">
-                                <span class="bi bi-people"></span>
-                            </button>
-                            <button class="btn btn-sm btn-outline-primary" title="Copy this user to the checked target machine(s)"
-                                    disabled="@(_targets.Count == 0)" @onclick="() => CopyUserAsync(r.Pin)">
-                                <span class="bi bi-box-arrow-in-right"></span> Copy
-                            </button>
-                            <button class="btn btn-sm btn-outline-danger" title="Send @_enrollType enrollment to the checked target machine(s)"
-                                    disabled="@(_targets.Count == 0)" @onclick="() => EnrollUserAsync(r.Pin)">
-                                <span class="bi bi-fingerprint"></span> Enroll
-                            </button>
+                            <button class="btn btn-sm btn-outline-primary py-0 px-1" title="Copy this user to machines…" @onclick="() => OpenPickerFor(r.Pin, PickAction.Copy)"><span class="bi bi-box-arrow-in-right"></span></button>
+                            <button class="btn btn-sm btn-outline-danger py-0 px-1" title="Remove this user from machines…" @onclick="() => OpenPickerFor(r.Pin, PickAction.Remove)"><span class="bi bi-trash"></span></button>
+                            <button class="btn btn-sm btn-outline-secondary py-0 px-1" title="Enroll on machines…" @onclick="() => OpenPickerFor(r.Pin, PickAction.Enroll)"><span class="bi bi-fingerprint"></span></button>
                         </td>
                     </tr>
+                    @if (_expanded == r.Pin)
+                    {
+                        <tr class="us-detail">
+                            <td></td>
+                            <td colspan="5" class="py-2">
+                                <div class="d-flex flex-wrap gap-1">
+                                    @foreach (var inst in r.Instances.OrderBy(i => DeviceName(i.DeviceId)))
+                                    {
+                                        var nm = string.IsNullOrWhiteSpace(inst.Name) ? "—" : inst.Name!;
+                                        var isDefault = !string.IsNullOrWhiteSpace(_edited.GetValueOrDefault(r.Pin)) && nm == _edited[r.Pin];
+                                        <span class="us-chip @(isDefault ? "ok" : r.DistinctNames.Count > 1 ? "warn" : "")"
+                                              role="button" title="Use this name as the unified name"
+                                              @onclick="() => _edited[r.Pin] = inst.Name">
+                                            @DeviceName(inst.DeviceId): <strong>@nm</strong>
+                                        </span>
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
                 }
+                @if (!Page.Any()) { <tr><td colspan="6" class="text-center text-muted py-3">No users match.</td></tr> }
             </tbody>
         </table>
     </div>
+
+    @if (PageCount > 1)
+    {
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(_page <= 1)" @onclick="() => _page--">Prev</button>
+            <span class="small text-muted">Page @_page of @PageCount</span>
+            <button class="btn btn-sm btn-outline-secondary" disabled="@(_page >= PageCount)" @onclick="() => _page++">Next</button>
+            <select class="form-select form-select-sm w-auto ms-2" @bind="_pageSize" @bind:after="ResetPage">
+                <option value="50">50 / page</option><option value="100">100 / page</option><option value="200">200 / page</option>
+            </select>
+        </div>
+    }
 }
 
+@* ---------------- machine picker ---------------- *@
+@if (_picker is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog modal-lg"><div class="modal-content">
+            <div class="modal-header py-2">
+                <h5 class="modal-title">@PickerTitle</h5>
+                <button type="button" class="btn-close" @onclick="ClosePicker"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted mb-2">@PickerHelp</p>
+
+                @if (_picker == PickAction.Enroll)
+                {
+                    <div class="mb-2">
+                        <span class="small me-2">Enrollment type:</span>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="et" id="etF" checked="@(_enrollType == "finger")" @onchange="@(() => _enrollType = "finger")" />
+                            <label class="form-check-label small" for="etF">Fingerprint</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="et" id="etC" checked="@(_enrollType == "face")" @onchange="@(() => _enrollType = "face")" />
+                            <label class="form-check-label small" for="etC">Face</label>
+                        </div>
+                    </div>
+                }
+
+                <div class="d-flex gap-2 align-items-center mb-2">
+                    <input class="form-control form-control-sm" placeholder="search machines…" @bind="_pickerSearch" @bind:event="oninput" />
+                    <button class="btn btn-sm btn-outline-secondary text-nowrap" @onclick="PickAllVisible">Select all</button>
+                    <button class="btn btn-sm btn-outline-secondary text-nowrap" @onclick="() => _pickTargets.Clear()">None</button>
+                    @if (_picker is PickAction.Remove or PickAction.Move)
+                    {
+                        <button class="btn btn-sm btn-outline-secondary text-nowrap" @onclick="PickWhereUserIs">Machines they're on</button>
+                    }
+                </div>
+
+                <div class="us-machines">
+                    @foreach (var d in PickerDevices)
+                    {
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="pk@(d.Key)"
+                                   checked="@_pickTargets.Contains(d.Key)" @onchange="e => PickTarget(d.Key, (bool)e.Value!)" />
+                            <label class="form-check-label small d-flex justify-content-between" for="pk@(d.Key)">
+                                <span>@d.Value</span>
+                                @if (_actionPins.Count == 1 && OnMachine(_actionPins[0], d.Key)) { <span class="us-chip ok">has user</span> }
+                            </label>
+                        </div>
+                    }
+                </div>
+                <div class="small text-muted mt-2">@_pickTargets.Count machine(s) selected · @_actionPins.Count user(s)</div>
+
+                @if (_picker == PickAction.Move && _pickTargets.Count > 0)
+                {
+                    <div class="alert alert-warning py-2 mt-2 mb-0 small">
+                        <b>Move</b> copies the user to the selected machine(s), then <b>removes</b> them from every other
+                        machine they are currently on. Attendance history is kept.
+                    </div>
+                }
+                @if (_picker == PickAction.Remove && _pickTargets.Count > 0)
+                {
+                    <div class="alert alert-danger py-2 mt-2 mb-0 small">
+                        This deletes the user and their fingerprints/face <b>from the selected machine(s)</b>.
+                        Attendance history is kept.
+                    </div>
+                }
+            </div>
+            <div class="modal-footer py-2">
+                <button class="btn btn-secondary btn-sm" @onclick="ClosePicker">Cancel</button>
+                <button class="btn btn-primary btn-sm" disabled="@(_pickTargets.Count == 0 || _busy)" @onclick="RunPickerAsync">
+                    @if (_busy) { <span class="spinner-border spinner-border-sm me-1"></span> }
+                    Queue @PickerVerb (@(_actionPins.Count * _pickTargets.Count) job@((_actionPins.Count * _pickTargets.Count) == 1 ? "" : "s"))
+                </button>
+            </div>
+        </div></div>
+    </div>
+}
+
+@* ---------------- unify confirm ---------------- *@
+@if (_unifyPreview is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+        <div class="modal-dialog"><div class="modal-content">
+            <div class="modal-header py-2"><h5 class="modal-title"><span class="bi bi-magic"></span> Unify names</h5>
+                <button type="button" class="btn-close" @onclick="() => _unifyPreview = null"></button></div>
+            <div class="modal-body">
+                <p class="small mb-2">
+                    For each selected user this sets the unified name and pushes it to <b>every machine that user is on</b>,
+                    so the same person shows the same name everywhere.
+                </p>
+                <ul class="small mb-2">
+                    <li><b>@_unifyPreview.Users</b> user(s)</li>
+                    <li><b>@_unifyPreview.Jobs</b> machine update job(s) will be queued</li>
+                    @if (_unifyPreview.NoName > 0) { <li class="text-warning">@_unifyPreview.NoName user(s) have no name to use — they'll be skipped</li> }
+                </ul>
+                @if (_unifyPreview.Jobs > 500)
+                {
+                    <div class="alert alert-warning py-2 small mb-0">That's a lot of jobs — they run one at a time and may take a while to drain.</div>
+                }
+            </div>
+            <div class="modal-footer py-2">
+                <button class="btn btn-secondary btn-sm" @onclick="() => _unifyPreview = null">Cancel</button>
+                <button class="btn btn-primary btn-sm" disabled="@_busy" @onclick="UnifySelectedAsync">
+                    @if (_busy) { <span class="spinner-border spinner-border-sm me-1"></span> }Unify &amp; push
+                </button>
+            </div>
+        </div></div>
+    </div>
+}
+
+@* ---------------- add user ---------------- *@
 @if (_adding)
 {
     <div class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title"><span class="bi bi-person-plus"></span> Add user &amp; enroll</h5>
-                    <button type="button" class="btn-close" @onclick="() => _adding = false"></button>
+        <div class="modal-dialog"><div class="modal-content">
+            <div class="modal-header py-2"><h5 class="modal-title"><span class="bi bi-person-plus"></span> Add user &amp; enroll</h5>
+                <button type="button" class="btn-close" @onclick="() => _adding = false"></button></div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-4"><label class="form-label mb-0 small">User id (PIN)</label>
+                        <input class="form-control form-control-sm" @bind="_newPin" /></div>
+                    <div class="col-8"><label class="form-label mb-0 small">Name</label>
+                        <input class="form-control form-control-sm" @bind="_newName" /></div>
                 </div>
-                <div class="modal-body">
-                    <div class="row g-2">
-                        <div class="col-4">
-                            <label class="form-label mb-0 small">User id (PIN)</label>
-                            <input class="form-control form-control-sm" @bind="_newPin" />
+                <label class="form-label mb-0 small mt-3">Create on machine(s)</label>
+                <input class="form-control form-control-sm mb-1" placeholder="search machines…" @bind="_addSearch" @bind:event="oninput" />
+                <div class="us-machines">
+                    @foreach (var d in DeviceList.Where(d => string.IsNullOrWhiteSpace(_addSearch) || d.Value.Contains(_addSearch, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="ad@(d.Key)" checked="@_addTargets.Contains(d.Key)" @onchange="e => AddTarget(d.Key, (bool)e.Value!)" />
+                            <label class="form-check-label small" for="ad@(d.Key)">@d.Value</label>
                         </div>
-                        <div class="col-8">
-                            <label class="form-label mb-0 small">Name</label>
-                            <input class="form-control form-control-sm" @bind="_newName" />
-                        </div>
-                    </div>
-                    <label class="form-label mb-0 small mt-3">Create on machine(s)</label>
-                    <div>
-                        @foreach (var d in _devices.OrderBy(d => d.Value))
-                        {
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="checkbox" id="add@(d.Key)"
-                                       checked="@_addTargets.Contains(d.Key)" @onchange="e => AddTarget(d.Key, (bool)e.Value!)" />
-                                <label class="form-check-label small" for="add@(d.Key)">@d.Value</label>
-                            </div>
-                        }
-                    </div>
-                    <label class="form-label mb-0 small mt-3">Then start enrollment</label>
-                    <div>
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="addEnroll" id="ae0" checked="@(_addEnroll == "none")" @onchange="@(() => _addEnroll = "none")" />
-                            <label class="form-check-label small" for="ae0">None (just create)</label>
-                        </div>
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="addEnroll" id="ae1" checked="@(_addEnroll == "finger")" @onchange="@(() => _addEnroll = "finger")" />
-                            <label class="form-check-label small" for="ae1">Fingerprint</label>
-                        </div>
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="addEnroll" id="ae2" checked="@(_addEnroll == "face")" @onchange="@(() => _addEnroll = "face")" />
-                            <label class="form-check-label small" for="ae2">Face</label>
-                        </div>
-                    </div>
-                    <p class="small text-muted mt-2 mb-0">
-                        The user is created on the selected machine(s). If you pick an enrollment type, the terminal
-                        prompts the person to place a finger / show their face; the captured template uploads
-                        automatically and this app saves it.
-                    </p>
+                    }
                 </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" @onclick="() => _adding = false">Cancel</button>
-                    <button class="btn btn-success" disabled="@(string.IsNullOrWhiteSpace(_newPin) || _addTargets.Count == 0)" @onclick="AddUserAsync">
-                        <span class="bi bi-check-lg"></span> Create @(_addEnroll == "none" ? "" : "& enroll")
-                    </button>
+                <label class="form-label mb-0 small mt-3">Then start enrollment</label>
+                <div>
+                    <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="ae" id="ae0" checked="@(_addEnroll == "none")" @onchange="@(() => _addEnroll = "none")" /><label class="form-check-label small" for="ae0">None</label></div>
+                    <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="ae" id="ae1" checked="@(_addEnroll == "finger")" @onchange="@(() => _addEnroll = "finger")" /><label class="form-check-label small" for="ae1">Fingerprint</label></div>
+                    <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="ae" id="ae2" checked="@(_addEnroll == "face")" @onchange="@(() => _addEnroll = "face")" /><label class="form-check-label small" for="ae2">Face</label></div>
                 </div>
+                <p class="small text-muted mt-2 mb-0">@_addTargets.Count machine(s) selected. If you pick an enrollment type, the terminal prompts the person; the captured template uploads automatically.</p>
             </div>
-        </div>
+            <div class="modal-footer py-2">
+                <button class="btn btn-secondary btn-sm" @onclick="() => _adding = false">Cancel</button>
+                <button class="btn btn-success btn-sm" disabled="@(string.IsNullOrWhiteSpace(_newPin) || _addTargets.Count == 0)" @onclick="AddUserAsync">
+                    <span class="bi bi-check-lg"></span> Create @(_addEnroll == "none" ? "" : "& enroll")
+                </button>
+            </div>
+        </div></div>
     </div>
 }
 
 @code {
+    private enum PickAction { Copy, Move, Remove, Enroll }
+
     private record Instance(int DeviceId, string? Name, bool HasFace, int Fp);
-    private record UserRow(string Pin, string? Default, List<Instance> Instances)
+    private record UserRow(string Pin, string? Default, string? EmployeeName, List<Instance> Instances)
     {
         public List<string> DistinctNames =>
             Instances.Where(i => !string.IsNullOrWhiteSpace(i.Name)).Select(i => i.Name!).Distinct().ToList();
+        public bool AnyFace => Instances.Any(i => i.HasFace);
+        public int MaxFp => Instances.Count == 0 ? 0 : Instances.Max(i => i.Fp);
+        public bool AnyUnnamed => Instances.Any(i => string.IsNullOrWhiteSpace(i.Name));
     }
+    private record UnifyPreview(int Users, int Jobs, int NoName);
 
     private List<UserRow>? _rows;
     private Dictionary<int, string> _devices = new();
     private readonly Dictionary<string, string?> _edited = new();
     private readonly HashSet<string> _selected = new();
-    private readonly HashSet<int> _targets = new();
-    private string _enrollType = "finger";
-    private string _filter = "";
+    private string _filter = "", _show = "all";
     private int _deviceFilter;
-    private string? _flash;
-    private string _flashKind = "info";
+    private string? _expanded;
+    private int _page = 1, _pageSize = 100;
+    private bool _busy;
 
-    // Add-user modal
+    // picker
+    private PickAction? _picker;
+    private readonly HashSet<int> _pickTargets = new();
+    private List<string> _actionPins = new();
+    private string _pickerSearch = "";
+    private string _enrollType = "finger";
+
+    private UnifyPreview? _unifyPreview;
+
+    // add
     private bool _adding;
-    private string _newPin = "";
-    private string _newName = "";
+    private string _newPin = "", _newName = "", _addSearch = "";
     private readonly HashSet<int> _addTargets = new();
     private string _addEnroll = "none";
 
+    private string? _flash;
+    private string _flashKind = "info";
+
     protected override void OnInitialized() => Notifier.JobChanged += OnJobChanged;
     protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private IEnumerable<KeyValuePair<int, string>> DeviceList => _devices.OrderBy(d => d.Value);
+    private string DeviceName(int id) => _devices.GetValueOrDefault(id, "?");
 
     private async Task LoadAsync()
     {
@@ -252,20 +383,27 @@ else
             Fp = u.Templates.Count(t => t.Type == TemplateType.Fingerprint)
         }).ToListAsync();
         var profiles = await db.UserProfiles.ToDictionaryAsync(p => p.Pin, p => p.DisplayName);
+        var employees = await db.Employees.Where(e => e.FullName != null)
+            .ToDictionaryAsync(e => e.Pin, e => e.FullName);
 
         _rows = raw.GroupBy(x => x.DeviceUserId)
-            .Select(g => new UserRow(g.Key, profiles.GetValueOrDefault(g.Key),
+            .Select(g => new UserRow(g.Key, profiles.GetValueOrDefault(g.Key), employees.GetValueOrDefault(g.Key),
                 g.Select(x => new Instance(x.SourceDeviceId, x.Name, x.HasFace, x.Fp)).ToList()))
             .OrderBy(r => r.Pin.Length).ThenBy(r => r.Pin)
             .ToList();
 
         foreach (var r in _rows)
-            _edited[r.Pin] = _edited.TryGetValue(r.Pin, out var v) && !string.IsNullOrWhiteSpace(v) ? v : (r.Default ?? SuggestName(r));
+            if (!_edited.TryGetValue(r.Pin, out var v) || string.IsNullOrWhiteSpace(v))
+                _edited[r.Pin] = r.Default ?? Suggested(r);
     }
 
-    private static string? SuggestName(UserRow r)
-        => r.Instances.Select(i => i.Name).Where(n => !string.IsNullOrWhiteSpace(n) && n != r.Pin)
-            .GroupBy(n => n).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key;
+    /// <summary>Best name to unify on: saved default → HR/employee name → most common name on the machines.</summary>
+    private string Suggested(UserRow r)
+        => r.Default
+           ?? r.EmployeeName
+           ?? r.Instances.Select(i => i.Name).Where(n => !string.IsNullOrWhiteSpace(n) && n != r.Pin)
+                .GroupBy(n => n!).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key
+           ?? r.Pin;
 
     private IEnumerable<UserRow> Filtered
     {
@@ -273,29 +411,33 @@ else
         {
             var rows = (IEnumerable<UserRow>)(_rows ?? new List<UserRow>());
             if (_deviceFilter > 0) rows = rows.Where(r => r.Instances.Any(i => i.DeviceId == _deviceFilter));
+            rows = _show switch
+            {
+                "conflict" => rows.Where(r => r.DistinctNames.Count > 1),
+                "nodefault" => rows.Where(r => string.IsNullOrWhiteSpace(r.Default)),
+                "unnamed" => rows.Where(r => r.AnyUnnamed),
+                _ => rows
+            };
             if (!string.IsNullOrWhiteSpace(_filter))
                 rows = rows.Where(r => r.Pin.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                    || (r.EmployeeName?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)
                     || r.Instances.Any(i => i.Name?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false)
                     || (_edited.GetValueOrDefault(r.Pin)?.Contains(_filter, StringComparison.OrdinalIgnoreCase) ?? false));
             return rows;
         }
     }
 
-    private bool AllVisibleSelected => Filtered.Any() && Filtered.All(r => _selected.Contains(r.Pin));
-    private void ToggleAll(ChangeEventArgs e) { var on = (bool)e.Value!; foreach (var r in Filtered) { if (on) _selected.Add(r.Pin); else _selected.Remove(r.Pin); } }
+    private int PageCount => Math.Max(1, (int)Math.Ceiling(Filtered.Count() / (double)_pageSize));
+    private IEnumerable<UserRow> Page => Filtered.Skip((_page - 1) * _pageSize).Take(_pageSize);
+    private void ResetPage() => _page = 1;
+
+    private bool AllVisibleSelected => Page.Any() && Page.All(r => _selected.Contains(r.Pin));
+    private void ToggleAll(ChangeEventArgs e) { var on = (bool)e.Value!; foreach (var r in Page) { if (on) _selected.Add(r.Pin); else _selected.Remove(r.Pin); } }
     private void Select(string pin, bool on) { if (on) _selected.Add(pin); else _selected.Remove(pin); }
-    private void Target(int id, bool on) { if (on) _targets.Add(id); else _targets.Remove(id); }
-    private void AddTarget(int id, bool on) { if (on) _addTargets.Add(id); else _addTargets.Remove(id); }
-    private void UseName(string pin, string? name) => _edited[pin] = name;
-    private void OpenAdd() { _newPin = ""; _newName = ""; _addTargets.Clear(); _addEnroll = "none"; _adding = true; }
+    private void Expand(string pin) => _expanded = _expanded == pin ? null : pin;
+    private bool OnMachine(string pin, int deviceId) => _rows?.FirstOrDefault(r => r.Pin == pin)?.Instances.Any(i => i.DeviceId == deviceId) ?? false;
 
-    private async Task SaveNameAsync(string pin)
-    {
-        await UpsertNameAsync(pin, _edited.GetValueOrDefault(pin));
-        Flash($"Default name for {pin} saved.", "success");
-        await LoadAsync();
-    }
-
+    // ---------- names ----------
     private async Task UpsertNameAsync(string pin, string? name)
     {
         await using var db = DbFactory.CreateDbContext();
@@ -306,109 +448,176 @@ else
         await db.SaveChangesAsync();
     }
 
-    private async Task ApplyNameAsync(string pin)
+    private async Task SaveNameAsync(string pin)
     {
         await UpsertNameAsync(pin, _edited.GetValueOrDefault(pin));
-        var row = _rows!.First(r => r.Pin == pin);
-        int n = 0;
-        foreach (var inst in row.Instances) { await Jobs.QueueApplyNameAsync(inst.DeviceId, pin); n++; }
-        Flash($"Queued {n} name-update job(s) for {pin}.", "success");
-    }
-
-    private async Task ApplySelectedAsync()
-    {
-        int n = 0;
-        foreach (var pin in _selected.ToList())
-        {
-            await UpsertNameAsync(pin, _edited.GetValueOrDefault(pin));
-            if (string.IsNullOrWhiteSpace(_edited.GetValueOrDefault(pin))) continue;
-            foreach (var inst in _rows!.First(r => r.Pin == pin).Instances)
-            { await Jobs.QueueApplyNameAsync(inst.DeviceId, pin); n++; }
-        }
-        Flash($"Queued {n} name-update job(s) for {_selected.Count} user(s).", "success");
+        Flash($"Unified name for {pin} saved (app only — use ➤ to push it to the machines).", "success");
         await LoadAsync();
     }
 
-    // ---- copy ----
-    private async Task CopyUserAsync(string pin)
+    private async Task ApplyNameAsync(string pin)
     {
+        var name = _edited.GetValueOrDefault(pin);
+        if (string.IsNullOrWhiteSpace(name)) { Flash("Enter a name first.", "warning"); return; }
+        await UpsertNameAsync(pin, name);
         var row = _rows!.First(r => r.Pin == pin);
-        var (n, skip) = await QueueCopyForRowAsync(row);
-        Flash($"Queued {n} copy job(s) for {pin}" + (skip > 0 ? $" ({skip} target(s) had no source data)." : "."), "success");
+        foreach (var inst in row.Instances) await Jobs.QueueApplyNameAsync(inst.DeviceId, pin);
+        Flash($"Queued {row.Instances.Count} name update(s) for {pin}.", "success");
     }
 
-    private async Task CopySelectedAsync()
+    private Task ConfirmUnifyAsync()
     {
-        int n = 0, skip = 0;
-        foreach (var pin in _selected.ToList())
+        int users = 0, jobs = 0, noName = 0;
+        foreach (var pin in _selected)
         {
-            var (a, b) = await QueueCopyForRowAsync(_rows!.First(r => r.Pin == pin));
-            n += a; skip += b;
+            var row = _rows!.FirstOrDefault(r => r.Pin == pin);
+            if (row is null) continue;
+            var name = _edited.GetValueOrDefault(pin);
+            if (string.IsNullOrWhiteSpace(name)) name = Suggested(row);
+            if (string.IsNullOrWhiteSpace(name) || name == row.Pin) { noName++; continue; }
+            users++; jobs += row.Instances.Count;
         }
-        Flash($"Queued {n} copy job(s) to {_targets.Count} machine(s)" + (skip > 0 ? $" ({skip} skipped)." : "."), "success");
+        _unifyPreview = new UnifyPreview(users, jobs, noName);
+        return Task.CompletedTask;
     }
 
-    private async Task<(int queued, int skipped)> QueueCopyForRowAsync(UserRow row)
+    private async Task UnifySelectedAsync()
     {
-        int n = 0, skip = 0;
-        foreach (var target in _targets)
+        _busy = true;
+        try
         {
-            var src = BestSource(row, target);
-            if (src is null) { skip++; continue; }          // no other machine has this user's data
-            await Jobs.QueueSyncCopyUserAsync(src.Value, target, row.Pin);
-            n++;
+            int users = 0, jobs = 0;
+            foreach (var pin in _selected.ToList())
+            {
+                var row = _rows!.FirstOrDefault(r => r.Pin == pin);
+                if (row is null) continue;
+                var name = _edited.GetValueOrDefault(pin);
+                if (string.IsNullOrWhiteSpace(name)) name = Suggested(row);
+                if (string.IsNullOrWhiteSpace(name) || name == row.Pin) continue;
+
+                _edited[pin] = name;
+                await UpsertNameAsync(pin, name);
+                foreach (var inst in row.Instances) { await Jobs.QueueApplyNameAsync(inst.DeviceId, pin); jobs++; }
+                users++;
+            }
+            _unifyPreview = null;
+            Flash($"Unified {users} user(s) — queued {jobs} machine update(s). Watch progress on the Jobs page.", "success");
+            await LoadAsync();
         }
-        return (n, skip);
+        finally { _busy = false; }
     }
 
-    // ---- enroll ----
-    private async Task EnrollUserAsync(string pin)
+    // ---------- picker ----------
+    private void OpenPicker(PickAction a) { _actionPins = _selected.ToList(); StartPicker(a); }
+    private void OpenPickerFor(string pin, PickAction a) { _actionPins = new List<string> { pin }; StartPicker(a); }
+    private void StartPicker(PickAction a)
     {
-        var row = _rows!.First(r => r.Pin == pin);
-        int n = await QueueEnrollForRowAsync(row);
-        Flash($"Queued {n} {_enrollType} enrollment(s) for {pin}. Ask the person to enroll at the terminal(s).", "success");
+        _picker = a; _pickTargets.Clear(); _pickerSearch = "";
+        if (a is PickAction.Remove && _actionPins.Count == 1) PickWhereUserIs();
+    }
+    private void ClosePicker() { _picker = null; _pickTargets.Clear(); }
+    private void PickTarget(int id, bool on) { if (on) _pickTargets.Add(id); else _pickTargets.Remove(id); }
+    private IEnumerable<KeyValuePair<int, string>> PickerDevices =>
+        DeviceList.Where(d => string.IsNullOrWhiteSpace(_pickerSearch) || d.Value.Contains(_pickerSearch, StringComparison.OrdinalIgnoreCase));
+    private void PickAllVisible() { foreach (var d in PickerDevices) _pickTargets.Add(d.Key); }
+    private void PickWhereUserIs()
+    {
+        _pickTargets.Clear();
+        foreach (var pin in _actionPins)
+            foreach (var i in _rows!.FirstOrDefault(r => r.Pin == pin)?.Instances ?? new List<Instance>())
+                _pickTargets.Add(i.DeviceId);
     }
 
-    private async Task EnrollSelectedAsync()
+    private string PickerTitle => _picker switch
     {
-        int n = 0;
-        foreach (var pin in _selected.ToList())
-            n += await QueueEnrollForRowAsync(_rows!.First(r => r.Pin == pin));
-        Flash($"Queued {n} {_enrollType} enrollment(s) for {_selected.Count} user(s).", "success");
-    }
+        PickAction.Copy => "Copy user(s) to machines",
+        PickAction.Move => "Move user(s) to machines",
+        PickAction.Remove => "Remove user(s) from machines",
+        _ => "Enroll user(s) on machines"
+    };
+    private string PickerVerb => _picker switch
+    {
+        PickAction.Copy => "copy", PickAction.Move => "move", PickAction.Remove => "removal", _ => "enrollment"
+    };
+    private string PickerHelp => _picker switch
+    {
+        PickAction.Copy => "The user's record and stored fingerprints/face are sent to each machine you tick.",
+        PickAction.Move => "Copy to the ticked machines, then remove from the others they're currently on.",
+        PickAction.Remove => "Delete the user (and their templates) from each machine you tick.",
+        _ => "Sends a remote enrollment command; the person enrols at the terminal itself."
+    };
 
-    private async Task<int> QueueEnrollForRowAsync(UserRow row)
+    private async Task RunPickerAsync()
     {
-        int n = 0;
-        foreach (var target in _targets)
+        _busy = true;
+        try
         {
-            // Ensure the user exists on the target before enrolling.
-            if (!row.Instances.Any(i => i.DeviceId == target))
-                await Jobs.QueueCreateUserAsync(target, row.Pin);
-            if (_enrollType == "face") await Jobs.QueueEnrollFaceAsync(target, row.Pin);
-            else await Jobs.QueueEnrollFingerAsync(target, row.Pin);
-            n++;
+            int queued = 0, skipped = 0;
+            foreach (var pin in _actionPins)
+            {
+                var row = _rows!.FirstOrDefault(r => r.Pin == pin);
+                if (row is null) continue;
+
+                switch (_picker)
+                {
+                    case PickAction.Copy:
+                    case PickAction.Move:
+                        foreach (var t in _pickTargets)
+                        {
+                            var src = BestSource(row, t);
+                            if (src is null) { skipped++; continue; }
+                            await Jobs.QueueSyncCopyUserAsync(src.Value, t, pin); queued++;
+                        }
+                        if (_picker == PickAction.Move)
+                            foreach (var inst in row.Instances.Where(i => !_pickTargets.Contains(i.DeviceId)))
+                            { await Jobs.QueueDeleteUserAsync(inst.DeviceId, pin); queued++; }
+                        break;
+
+                    case PickAction.Remove:
+                        foreach (var t in _pickTargets.Where(t => row.Instances.Any(i => i.DeviceId == t)))
+                        { await Jobs.QueueDeleteUserAsync(t, pin); queued++; }
+                        break;
+
+                    case PickAction.Enroll:
+                        foreach (var t in _pickTargets)
+                        {
+                            if (!row.Instances.Any(i => i.DeviceId == t)) await Jobs.QueueCreateUserAsync(t, pin);
+                            if (_enrollType == "face") await Jobs.QueueEnrollFaceAsync(t, pin);
+                            else await Jobs.QueueEnrollFingerAsync(t, pin);
+                            queued++;
+                        }
+                        break;
+                }
+            }
+            var verb = PickerVerb;
+            ClosePicker();
+            Flash($"Queued {queued} {verb} job(s)" + (skipped > 0 ? $" — {skipped} skipped (no stored templates to copy from)." : "."), "success");
+            await LoadAsync();
         }
-        return n;
+        finally { _busy = false; }
     }
 
-    // ---- add user ----
+    private int? BestSource(UserRow row, int excludeDeviceId)
+        => row.Instances.Where(i => i.DeviceId != excludeDeviceId && (i.HasFace || i.Fp > 0))
+            .OrderByDescending(i => i.HasFace).ThenByDescending(i => i.Fp)
+            .Select(i => (int?)i.DeviceId).FirstOrDefault();
+
+    // ---------- add ----------
+    private void OpenAdd() { _newPin = ""; _newName = ""; _addSearch = ""; _addTargets.Clear(); _addEnroll = "none"; _adding = true; }
+    private void AddTarget(int id, bool on) { if (on) _addTargets.Add(id); else _addTargets.Remove(id); }
+
     private async Task AddUserAsync()
     {
         var pin = _newPin.Trim();
         if (string.IsNullOrWhiteSpace(pin) || _addTargets.Count == 0) return;
-
         await UpsertNameAsync(pin, _newName);
 
-        // Create a local record for each target so the user shows immediately (the device push reconciles it).
         await using (var db = DbFactory.CreateDbContext())
         {
             foreach (var did in _addTargets)
-            {
                 if (!await db.EnrolledUsers.AnyAsync(u => u.SourceDeviceId == did && u.DeviceUserId == pin))
                     db.EnrolledUsers.Add(new EnrolledUser { SourceDeviceId = did, DeviceUserId = pin,
                         Name = string.IsNullOrWhiteSpace(_newName) ? null : _newName.Trim(), LastDownloadedUtc = DateTime.UtcNow });
-            }
             await db.SaveChangesAsync();
         }
 
@@ -420,17 +629,11 @@ else
             else if (_addEnroll == "face") { await Jobs.QueueEnrollFaceAsync(did, pin); enrolled++; }
         }
         _adding = false;
-        Flash($"Queued create on {created} machine(s)" +
-              (enrolled > 0 ? $" and {enrolled} {_addEnroll} enrollment(s). Ask the person to enroll at the terminal(s)." : "."),
-              "success");
+        Flash($"Queued create on {created} machine(s)" + (enrolled > 0 ? $" and {enrolled} {_addEnroll} enrollment(s)." : "."), "success");
         await LoadAsync();
     }
 
-    private int? BestSource(UserRow row, int excludeDeviceId)
-        => row.Instances.Where(i => i.DeviceId != excludeDeviceId && (i.HasFace || i.Fp > 0))
-            .OrderByDescending(i => i.HasFace).ThenByDescending(i => i.Fp)
-            .Select(i => (int?)i.DeviceId).FirstOrDefault();
-
+    // ---------- misc ----------
     private System.Threading.Timer? _flashTimer;
     private void Flash(string m, string k)
     {
@@ -438,7 +641,7 @@ else
         _flashTimer?.Dispose();
         if (k == "success")
             _flashTimer = new System.Threading.Timer(_ => InvokeAsync(() => { _flash = null; StateHasChanged(); }),
-                null, 4000, System.Threading.Timeout.Infinite);
+                null, 5000, System.Threading.Timeout.Infinite);
     }
     private async void OnJobChanged(int jobId) => await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
     public void Dispose() { Notifier.JobChanged -= OnJobChanged; _flashTimer?.Dispose(); }

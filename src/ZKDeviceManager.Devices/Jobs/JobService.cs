@@ -95,6 +95,10 @@ public class JobService
     public Task<int> QueueEnrollFaceAsync(int deviceId, string pin)
         => CreateAsync(new SyncJob { Type = SyncJobType.EnrollFace, DeviceId = deviceId, UserFilter = pin });
 
+    /// <summary>PUSH: remove ONE user (by PIN) from a single terminal, and drop the local record for it.</summary>
+    public Task<int> QueueDeleteUserAsync(int deviceId, string pin)
+        => CreateAsync(new SyncJob { Type = SyncJobType.DeleteUser, DeviceId = deviceId, UserFilter = pin });
+
     /// <summary>SDK control action (restart/power off/clear users/sync time/enable/disable UI), tracked as a job.</summary>
     public Task<int> QueueControlAsync(int deviceId, SyncJobType controlType)
     {

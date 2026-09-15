@@ -125,6 +125,9 @@ public class DeviceJobRunner : BackgroundService
                 case SyncJobType.CreateUser:
                     await PushCreateUserAsync(job, jobCt);
                     break;
+                case SyncJobType.DeleteUser:
+                    await PushDeleteUserAsync(job, jobCt);
+                    break;
                 case SyncJobType.EnrollFinger:
                     await PushEnrollAsync(job, $"ENROLL_FP PIN={job.UserFilter}\tFID=0\tRETRY=3\tOVERWRITE=1",
                         "fingerprint", jobCt);
@@ -324,6 +327,38 @@ public class DeviceJobRunner : BackgroundService
         job.Progress = delivered;
         job.Message = $"Pushed name \"{displayName}\" for user {user.DeviceUserId} to {device.Name} " +
                       $"({(delivered > 0 ? "delivered" : "queued")}" + (completed > 0 ? ", confirmed" : "") + ").";
+    }
+
+    /// <summary>
+    /// Remove one user from one terminal (DATA DELETE USERINFO). The terminal drops the user and all of
+    /// their templates; we mirror that by deleting the local EnrolledUser row for THIS device only, so the
+    /// stored counts stay truthful. Attendance history is deliberately kept.
+    /// </summary>
+    private async Task PushDeleteUserAsync(SyncJob job, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(job.UserFilter))
+            throw new InvalidOperationException("Delete-user job has no user.");
+        var (device, serial) = await ResolvePushTargetAsync(job.DeviceId, "this device", ct);
+
+        var cmd = $"DATA DELETE USERINFO PIN={job.UserFilter}";
+        var ids = await QueueCommandsAsync(serial, new[] { cmd }, ct);
+        job.Total = 1;
+
+        var (delivered, completed) = await PollDeliverAsync(job, ids, $"Removing user from {device.Name}", ct);
+        job.Progress = delivered;
+
+        int removed = 0;
+        if (delivered > 0)
+        {
+            await using var db = _dbf.CreateDbContext();
+            removed = await db.EnrolledUsers
+                .Where(u => u.SourceDeviceId == device.Id && u.DeviceUserId == job.UserFilter)
+                .ExecuteDeleteAsync(ct);   // cascades to that user's templates on this device
+        }
+
+        job.Message = $"Removed user {job.UserFilter} from {device.Name} " +
+                      $"({(delivered > 0 ? "delivered" : "queued")}" + (completed > 0 ? ", confirmed" : "") + ")." +
+                      (removed > 0 ? " Local record cleared; attendance history kept." : "");
     }
 
     /// <summary>Resolve a device to a PUSH-addressable (serial, connected) target or throw a clear reason.</summary>

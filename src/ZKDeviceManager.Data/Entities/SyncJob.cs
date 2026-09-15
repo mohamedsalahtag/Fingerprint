@@ -41,7 +41,10 @@ public enum SyncJobType
     EnrollFace = 19,
 
     /// <summary>PUSH: change the terminal's Cloud Server / ADMS address (SET OPTIONS), optionally rebooting.</summary>
-    SetAdmsServer = 20
+    SetAdmsServer = 20,
+
+    /// <summary>PUSH: remove ONE user (by PIN) from a single terminal (DATA DELETE USERINFO).</summary>
+    DeleteUser = 21
 }
 
 public enum SyncJobStatus
