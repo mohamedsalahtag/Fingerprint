@@ -325,6 +325,18 @@ public class DeviceJobRunner : BackgroundService
 
         var (delivered, completed) = await PollDeliverAsync(job, ids, $"Applying name to {device.Name}", ct);
         job.Progress = delivered;
+
+        // Mirror the new name onto our stored record for THIS device straight away. Without this the
+        // Users page keeps showing the terminal's old name until that device next uploads its user list,
+        // which looks like the unify "didn't work".
+        if (delivered > 0)
+        {
+            await using var db2 = _dbf.CreateDbContext();
+            await db2.EnrolledUsers
+                .Where(u => u.SourceDeviceId == device.Id && u.DeviceUserId == job.UserFilter)
+                .ExecuteUpdateAsync(s => s.SetProperty(u => u.Name, displayName), ct);
+        }
+
         job.Message = $"Pushed name \"{displayName}\" for user {user.DeviceUserId} to {device.Name} " +
                       $"({(delivered > 0 ? "delivered" : "queued")}" + (completed > 0 ? ", confirmed" : "") + ").";
     }

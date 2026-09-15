@@ -71,8 +71,11 @@ else
     {
         <div class="us-actionbar mb-2 d-flex flex-wrap gap-2 align-items-center">
             <strong class="small">@_selected.Count selected</strong>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="SaveNamesSelectedAsync" title="Save the unified name in the app only — does not touch the machines">
+                <span class="bi bi-save"></span> Save names
+            </button>
             <button class="btn btn-sm btn-primary" @onclick="ConfirmUnifyAsync">
-                <span class="bi bi-magic"></span> Unify names on all their machines
+                <span class="bi bi-magic"></span> Save &amp; push names to machines
             </button>
             <span class="vr"></span>
             <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenPicker(PickAction.Copy)">
@@ -90,6 +93,8 @@ else
             <button class="btn btn-sm btn-link text-decoration-none ms-auto" @onclick="() => _selected.Clear()">clear</button>
         </div>
     }
+
+    @Pager
 
     <div class="table-responsive">
         <table class="table table-sm table-hover us-table align-middle">
@@ -123,11 +128,16 @@ else
                             @if (r.DistinctNames.Count > 1) { <span class="us-chip warn ms-1" title="Name differs across machines">⚠ @r.DistinctNames.Count names</span> }
                         </td>
                         <td class="small">
-                            <span class="us-chip @(r.AnyFace ? "ok" : "")">Face @(r.AnyFace ? "✔" : "—")</span>
-                            <span class="us-chip @(r.MaxFp > 0 ? "ok" : "")">FP @(r.MaxFp > 0 ? r.MaxFp.ToString() : "—")</span>
+                            <span class="us-chip @(r.AnyFace ? "ok" : "")" title="@(r.AnyFace ? "Face is enrolled on at least one machine" : "No face enrolled on any machine")">
+                                @(r.AnyFace ? "face ✔" : "no face")
+                            </span>
+                            <span class="us-chip @(r.MaxFp > 0 ? "ok" : "")" title="@(r.MaxFp > 0 ? $"{r.MaxFp} finger(s) enrolled (highest count on any one machine)" : "No fingerprints enrolled on any machine")">
+                                @(r.MaxFp > 0 ? $"{r.MaxFp} finger{(r.MaxFp == 1 ? "" : "s")}" : "no finger")
+                            </span>
                         </td>
                         <td class="text-end text-nowrap">
                             <button class="btn btn-sm btn-outline-primary py-0 px-1" title="Copy this user to machines…" @onclick="() => OpenPickerFor(r.Pin, PickAction.Copy)"><span class="bi bi-box-arrow-in-right"></span></button>
+                            <button class="btn btn-sm btn-outline-warning py-0 px-1" title="Move this user to machines…" @onclick="() => OpenPickerFor(r.Pin, PickAction.Move)"><span class="bi bi-arrow-left-right"></span></button>
                             <button class="btn btn-sm btn-outline-danger py-0 px-1" title="Remove this user from machines…" @onclick="() => OpenPickerFor(r.Pin, PickAction.Remove)"><span class="bi bi-trash"></span></button>
                             <button class="btn btn-sm btn-outline-secondary py-0 px-1" title="Enroll on machines…" @onclick="() => OpenPickerFor(r.Pin, PickAction.Enroll)"><span class="bi bi-fingerprint"></span></button>
                         </td>
@@ -158,17 +168,7 @@ else
         </table>
     </div>
 
-    @if (PageCount > 1)
-    {
-        <div class="d-flex align-items-center gap-2">
-            <button class="btn btn-sm btn-outline-secondary" disabled="@(_page <= 1)" @onclick="() => _page--">Prev</button>
-            <span class="small text-muted">Page @_page of @PageCount</span>
-            <button class="btn btn-sm btn-outline-secondary" disabled="@(_page >= PageCount)" @onclick="() => _page++">Next</button>
-            <select class="form-select form-select-sm w-auto ms-2" @bind="_pageSize" @bind:after="ResetPage">
-                <option value="50">50 / page</option><option value="100">100 / page</option><option value="200">200 / page</option>
-            </select>
-        </div>
-    }
+    @Pager
 }
 
 @* ---------------- machine picker ---------------- *@
@@ -207,6 +207,18 @@ else
                         <button class="btn btn-sm btn-outline-secondary text-nowrap" @onclick="PickWhereUserIs">Machines they're on</button>
                     }
                 </div>
+
+                @if (_picker is PickAction.Copy or PickAction.Remove)
+                {
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="pkRel" checked="@_onlyRelevant" @onchange="OnRelevanceChanged" />
+                        <label class="form-check-label small" for="pkRel">
+                            @(_picker == PickAction.Copy
+                                ? "Only machines that don't have this user yet (hides machines already set up)"
+                                : "Only machines this user is actually on")
+                        </label>
+                    </div>
+                }
 
                 <div class="us-machines">
                     @foreach (var d in PickerDevices)
@@ -354,6 +366,7 @@ else
     private List<string> _actionPins = new();
     private string _pickerSearch = "";
     private string _enrollType = "finger";
+    private bool _onlyRelevant = true;
 
     private UnifyPreview? _unifyPreview;
 
@@ -427,6 +440,19 @@ else
         }
     }
 
+    /// <summary>Paging controls — rendered both above and below the grid.</summary>
+    private RenderFragment Pager => @<div class="d-flex align-items-center gap-1 my-2 flex-wrap">
+        <button class="btn btn-sm btn-outline-secondary" disabled="@(_page <= 1)" @onclick="() => _page = 1" title="First page">« First</button>
+        <button class="btn btn-sm btn-outline-secondary" disabled="@(_page <= 1)" @onclick="() => _page--">‹ Prev</button>
+        <span class="small text-muted px-2">Page @_page of @PageCount</span>
+        <button class="btn btn-sm btn-outline-secondary" disabled="@(_page >= PageCount)" @onclick="() => _page++">Next ›</button>
+        <button class="btn btn-sm btn-outline-secondary" disabled="@(_page >= PageCount)" @onclick="() => _page = PageCount" title="Last page">Last »</button>
+        <select class="form-select form-select-sm w-auto ms-2" @bind="_pageSize" @bind:after="ResetPage">
+            <option value="50">50 / page</option><option value="100">100 / page</option><option value="200">200 / page</option>
+        </select>
+        <span class="small text-muted ms-auto">@Filtered.Count() user(s)</span>
+    </div>;
+
     private int PageCount => Math.Max(1, (int)Math.Ceiling(Filtered.Count() / (double)_pageSize));
     private IEnumerable<UserRow> Page => Filtered.Skip((_page - 1) * _pageSize).Take(_pageSize);
     private void ResetPage() => _page = 1;
@@ -463,6 +489,30 @@ else
         var row = _rows!.First(r => r.Pin == pin);
         foreach (var inst in row.Instances) await Jobs.QueueApplyNameAsync(inst.DeviceId, pin);
         Flash($"Queued {row.Instances.Count} name update(s) for {pin}.", "success");
+    }
+
+    /// <summary>Bulk: save the unified name for every selected user in the app only (no machine jobs).</summary>
+    private async Task SaveNamesSelectedAsync()
+    {
+        _busy = true;
+        try
+        {
+            int n = 0;
+            foreach (var pin in _selected.ToList())
+            {
+                var row = _rows!.FirstOrDefault(r => r.Pin == pin);
+                if (row is null) continue;
+                var name = _edited.GetValueOrDefault(pin);
+                if (string.IsNullOrWhiteSpace(name)) name = Suggested(row);
+                if (string.IsNullOrWhiteSpace(name) || name == row.Pin) continue;
+                _edited[pin] = name;
+                await UpsertNameAsync(pin, name);
+                n++;
+            }
+            Flash($"Saved the unified name for {n} user(s) in the app. Use \"Save & push\" to send them to the machines.", "success");
+            await LoadAsync();
+        }
+        finally { _busy = false; }
     }
 
     private Task ConfirmUnifyAsync()
@@ -513,12 +563,38 @@ else
     private void StartPicker(PickAction a)
     {
         _picker = a; _pickTargets.Clear(); _pickerSearch = "";
-        if (a is PickAction.Remove && _actionPins.Count == 1) PickWhereUserIs();
+        _onlyRelevant = a is PickAction.Copy or PickAction.Remove;   // hide machines where the action is a no-op
     }
     private void ClosePicker() { _picker = null; _pickTargets.Clear(); }
     private void PickTarget(int id, bool on) { if (on) _pickTargets.Add(id); else _pickTargets.Remove(id); }
-    private IEnumerable<KeyValuePair<int, string>> PickerDevices =>
-        DeviceList.Where(d => string.IsNullOrWhiteSpace(_pickerSearch) || d.Value.Contains(_pickerSearch, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// Machines offered in the picker. For Copy we hide machines that already have the user (nothing to do
+    /// there); for Remove we hide machines they're not on. The toggle lets you see everything anyway.
+    /// </summary>
+    private IEnumerable<KeyValuePair<int, string>> PickerDevices
+    {
+        get
+        {
+            var list = DeviceList.Where(d => string.IsNullOrWhiteSpace(_pickerSearch)
+                || d.Value.Contains(_pickerSearch, StringComparison.OrdinalIgnoreCase));
+            if (_onlyRelevant)
+            {
+                if (_picker == PickAction.Copy)
+                    list = list.Where(d => _actionPins.Any(p => !OnMachine(p, d.Key)));
+                else if (_picker == PickAction.Remove)
+                    list = list.Where(d => _actionPins.Any(p => OnMachine(p, d.Key)));
+            }
+            return list;
+        }
+    }
+
+    private void OnRelevanceChanged(ChangeEventArgs e)
+    {
+        _onlyRelevant = (bool)e.Value!;
+        // drop any ticked machine that the filter just hid, so the job count stays honest
+        var visible = PickerDevices.Select(d => d.Key).ToHashSet();
+        _pickTargets.RemoveWhere(id => !visible.Contains(id));
+    }
     private void PickAllVisible() { foreach (var d in PickerDevices) _pickTargets.Add(d.Key); }
     private void PickWhereUserIs()
     {
