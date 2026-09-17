@@ -8,8 +8,10 @@ namespace ZKDeviceManager.Web.Services;
 /// Live, database-derived counts for a device. This is the SINGLE source of truth for counts across
 /// the app (dashboard, devices list, device details, user templates) — replacing the old cumulative
 /// PushDevice counters that never reset and diverged from reality.
-/// <para><b>Faces = users who have at least one face template</b> (not the number of face template rows;
-/// a terminal stores ~12 face rows per enrolled user).</para>
+/// <para><b>A face always counts as ONE per employee</b>, everywhere. A terminal physically stores ~12
+/// face rows per enrolled person; those are internal parts of a single enrollment, never counted
+/// individually. Both <see cref="UsersWithFaces"/> and <see cref="FaceTemplates"/> are therefore
+/// per-person counts. Fingerprints are different: each enrolled finger is a real, separate template.</para>
 /// </summary>
 public readonly record struct DeviceStats(
     int Users,
@@ -76,7 +78,7 @@ public static class DeviceStatsQuery
             list.Count(x => x.HasFinger),
             list.Count(x => x.HasCard),
             list.Sum(x => x.Fp),
-            list.Sum(x => x.Fc),
+            list.Count(x => x.HasFace),   // one face per person, not the ~12 stored rows
             logs);
     }
 }

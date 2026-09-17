@@ -205,7 +205,7 @@ public class DeviceJobRunner : BackgroundService
         job.Total = final.Users;
         job.Progress = final.Users;
         job.Message = $"Synced from {device.Name}: {final.Users} users, {final.Fingerprints} fingerprint " +
-                      $"templates, {final.Faces} face templates ({final.UsersWithFaces} users with faces).";
+                      $"templates, {final.Faces} face(s) — one per enrolled person.";
     }
 
     private async Task PushDownloadLogsAsync(SyncJob job, CancellationToken ct)
@@ -243,13 +243,18 @@ public class DeviceJobRunner : BackgroundService
 
         var who = job.UserFilter is null ? "all users" : $"user {job.UserFilter}";
         int userCmds = commands.Count(c => c.StartsWith("DATA UPDATE USERINFO", StringComparison.Ordinal));
+        int fpCmds = commands.Count(c => c.StartsWith("DATA UPDATE FINGERTMP", StringComparison.Ordinal));
+        // A face is ONE per person even though the terminal stores it as ~12 rows/commands.
+        int faceCount = commands.Where(c => c.StartsWith("DATA UPDATE FACE", StringComparison.Ordinal))
+            .Select(PinOf).Distinct().Count();
         var ids = await QueueCommandsAsync(targetSerial, commands, ct);
         job.Total = ids.Count;
 
         var (delivered, completed) = await PollDeliverAsync(job, ids, $"Copying {who} to {targetDev.Name}", ct);
         job.Progress = delivered;
         var templateCmds = ids.Count - userCmds;
-        job.Message = $"Copy {who} to {targetDev.Name}: {userCmds} user record(s) + {templateCmds} template(s); " +
+        job.Message = $"Copy {who} to {targetDev.Name}: {userCmds} user record(s) + {fpCmds} fingerprint(s) + " +
+                      $"{faceCount} face(s); " +
                       $"{delivered} delivered, {completed} acknowledged by the terminal. " +
                       (templateCmds > 0 && completed <= userCmds
                           ? "WARNING: the terminal acknowledged no template — the fingerprints/face may NOT have "
@@ -393,6 +398,17 @@ public class DeviceJobRunner : BackgroundService
         return (device, device.SerialNumber!);
     }
 
+    /// <summary>Pull the PIN out of a "DATA UPDATE &lt;kind&gt; PIN=x\t..." command (for per-person counting).</summary>
+    private static string PinOf(string command)
+    {
+        const string marker = "PIN=";
+        var i = command.IndexOf(marker, StringComparison.Ordinal);
+        if (i < 0) return "";
+        i += marker.Length;
+        var end = command.IndexOf('\t', i);
+        return end < 0 ? command[i..] : command[i..end];
+    }
+
     private async Task<List<int>> QueueCommandsAsync(string serial, IEnumerable<string> commands, CancellationToken ct)
     {
         await using var db = _dbf.CreateDbContext();
@@ -495,8 +511,9 @@ public class DeviceJobRunner : BackgroundService
         var users = await db.EnrolledUsers.CountAsync(u => u.SourceDeviceId == deviceId, ct);
         var fp = await db.EnrolledUsers.Where(u => u.SourceDeviceId == deviceId)
             .SelectMany(u => u.Templates).CountAsync(t => t.Type == TemplateType.Fingerprint, ct);
-        var fc = await db.EnrolledUsers.Where(u => u.SourceDeviceId == deviceId)
-            .SelectMany(u => u.Templates).CountAsync(t => t.Type == TemplateType.Face, ct);
+        // A face counts ONCE per person (a terminal stores ~12 rows per enrollment — internal parts).
+        var fc = await db.EnrolledUsers.CountAsync(
+            u => u.SourceDeviceId == deviceId && u.Templates.Any(t => t.Type == TemplateType.Face), ct);
         var uwf = await db.EnrolledUsers.CountAsync(
             u => u.SourceDeviceId == deviceId && u.Templates.Any(t => t.Type == TemplateType.Face), ct);
         var logs = await db.AttendanceLogs.CountAsync(l => l.DeviceId == deviceId, ct);
