@@ -253,15 +253,26 @@ public class DeviceJobRunner : BackgroundService
         var (delivered, completed) = await PollDeliverAsync(job, ids, $"Copying {who} to {targetDev.Name}", ct);
         job.Progress = delivered;
         var templateCmds = ids.Count - userCmds;
+
+        // The terminal now holds the user, but the app only ever learns about users when a device
+        // UPLOADS its list — so without this the Users page still shows the person as "not on" the
+        // target and the copy looks like it failed. Mirror what we just sent into our own records.
+        int mirrored = 0;
+        if (completed >= ids.Count)
+            mirrored = await MirrorCopiedUsersAsync(source.Id, targetDev.Id, job.UserFilter,
+                job.IncludeFingerprints, job.IncludeFaces, job.IncludeCards, ct);
+
         job.Message = $"Copy {who} to {targetDev.Name}: {userCmds} user record(s) + {fpCmds} fingerprint(s) + " +
                       $"{faceCount} face(s); " +
                       $"{delivered} delivered, {completed} acknowledged by the terminal. " +
                       (templateCmds > 0 && completed <= userCmds
                           ? "WARNING: the terminal acknowledged no template — the fingerprints/face may NOT have "
                             + "transferred. Re-sync the target and check its biometric counts."
-                          : delivered >= ids.Count
-                              ? "Re-sync the target to confirm the stored counts."
-                              : "Delivery continues as the terminal polls; check the target shortly.");
+                          : mirrored > 0
+                              ? $"{mirrored} user(s) now recorded on {targetDev.Name} in the app."
+                              : delivered >= ids.Count
+                                  ? "Re-sync the target to confirm the stored counts."
+                                  : "Delivery continues as the terminal polls; check the target shortly.");
     }
 
     private async Task PushCreateUserAsync(SyncJob job, CancellationToken ct)
@@ -396,6 +407,70 @@ public class DeviceJobRunner : BackgroundService
                 $"{who} ({device.Name}) has not connected via PUSH/ADMS yet. On the terminal set " +
                 "Comm → Cloud Server/ADMS to this app's address and port, then retry.");
         return (device, device.SerialNumber!);
+    }
+
+    /// <summary>
+    /// After a copy the terminal holds the user, but our database only learns about users when a device
+    /// uploads its list — so the app would keep showing the person as missing from the target. This mirrors
+    /// the just-copied users (and their templates) onto the target's stored records so the UI matches
+    /// reality straight away. A later real sync from the terminal simply overwrites these rows.
+    /// </summary>
+    private async Task<int> MirrorCopiedUsersAsync(int sourceDeviceId, int targetDeviceId, string? pinFilter,
+        bool fingerprints, bool faces, bool cards, CancellationToken ct)
+    {
+        await using var db = _dbf.CreateDbContext();
+
+        var q = db.EnrolledUsers.AsNoTracking().Include(u => u.Templates)
+            .Where(u => u.SourceDeviceId == sourceDeviceId);
+        if (!string.IsNullOrWhiteSpace(pinFilter)) q = q.Where(u => u.DeviceUserId == pinFilter);
+        var sourceUsers = await q.ToListAsync(ct);
+        if (sourceUsers.Count == 0) return 0;
+
+        // Copies carry the unified default name, same as the commands we sent.
+        var names = await db.UserProfiles.AsNoTracking()
+            .Where(p => p.DisplayName != null && p.DisplayName != "")
+            .ToDictionaryAsync(p => p.Pin, p => p.DisplayName!, ct);
+
+        var pins = sourceUsers.Select(u => u.DeviceUserId).ToList();
+        var existing = await db.EnrolledUsers.Include(u => u.Templates)
+            .Where(u => u.SourceDeviceId == targetDeviceId && pins.Contains(u.DeviceUserId))
+            .ToListAsync(ct);
+
+        foreach (var src in sourceUsers)
+        {
+            var dst = existing.FirstOrDefault(u => u.DeviceUserId == src.DeviceUserId);
+            if (dst is null)
+            {
+                dst = new EnrolledUser { SourceDeviceId = targetDeviceId, DeviceUserId = src.DeviceUserId };
+                db.EnrolledUsers.Add(dst);
+            }
+            dst.Name = names.GetValueOrDefault(src.DeviceUserId) ?? src.Name;
+            dst.Privilege = src.Privilege;
+            dst.Password = src.Password;
+            if (cards) dst.CardNumber = src.CardNumber;
+            dst.Enabled = src.Enabled;
+            dst.LastDownloadedUtc = DateTime.UtcNow;
+
+            foreach (var t in src.Templates)
+            {
+                if (t.Type == TemplateType.Fingerprint && !fingerprints) continue;
+                if (t.Type == TemplateType.Face && !faces) continue;
+                var cur = dst.Templates.FirstOrDefault(x => x.Type == t.Type && x.FingerIndex == t.FingerIndex);
+                if (cur is null)
+                    dst.Templates.Add(new BiometricTemplate
+                    {
+                        Type = t.Type, FingerIndex = t.FingerIndex, Flag = t.Flag,
+                        Data = t.Data, Length = t.Length, DownloadedUtc = DateTime.UtcNow
+                    });
+                else
+                {
+                    cur.Flag = t.Flag; cur.Data = t.Data; cur.Length = t.Length; cur.DownloadedUtc = DateTime.UtcNow;
+                }
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+        return sourceUsers.Count;
     }
 
     /// <summary>Pull the PIN out of a "DATA UPDATE &lt;kind&gt; PIN=x\t..." command (for per-person counting).</summary>
