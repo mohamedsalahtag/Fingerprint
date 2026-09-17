@@ -14,6 +14,8 @@ public static class PushEndpoints
     private static readonly object _rawLock = new();
     private static readonly string _rawPath = Path.Combine(AppContext.BaseDirectory, "push_raw.log");
     private static bool _rawEnabled;   // debug only; enable via config "Push:RawLog"
+    /// <summary>Max bytes of commands handed to a terminal in one getrequest poll (config "Push:MaxResponseBytes").</summary>
+    private static int _maxResponseBytes = 1024;
     private static void Raw(string what)
     {
         if (!_rawEnabled) return;
@@ -23,6 +25,7 @@ public static class PushEndpoints
     public static void MapPushEndpoints(this WebApplication app)
     {
         _rawEnabled = app.Configuration.GetValue<bool>("Push:RawLog");
+        _maxResponseBytes = app.Configuration.GetValue("Push:MaxResponseBytes", 1024);
 
         // Terminals connect here WITHOUT any app login — these endpoints must stay anonymous even when
         // Active Directory auth is enabled for the human-facing UI.
@@ -72,19 +75,27 @@ public static class PushEndpoints
             if (!string.IsNullOrEmpty(sn)) await ingest.TouchDeviceAsync(sn, ip);
 
             await using var db = dbf.CreateDbContext();
-            // Deliver a large batch per poll so device-to-device copies (which can be hundreds of
-            // face/fingerprint commands) drain in a few polls instead of dozens.
             var pending = await db.PushCommands
                 .Where(c => c.SerialNumber == sn && c.DeliveredUtc == null)
                 .OrderBy(c => c.Id).Take(200).ToListAsync();
             if (pending.Count == 0)
                 return Results.Text("OK", "text/plain");
 
+            // IMPORTANT: budget the response size. These terminals silently drop everything after the
+            // first command when the reply is large — proven in the field: every command <= ~150 bytes
+            // (USERINFO/ENROLL/DELETE) gets acknowledged, while ~1.7-1.9 KB FACE/FINGERTMP commands sent
+            // in the same batch were NEVER acknowledged (0 of 2462). So small commands batch together and
+            // a big template command is sent on its own, one per poll.
             var lines = new List<string>();
+            var budget = _maxResponseBytes;
             foreach (var c in pending)
             {
-                lines.Add($"C:{c.Id}:{c.CommandText}");
+                var line = $"C:{c.Id}:{c.CommandText}";
+                if (lines.Count > 0 && line.Length > budget) break;   // always deliver at least one
+                lines.Add(line);
                 c.DeliveredUtc = DateTime.UtcNow;
+                budget -= line.Length;
+                if (budget <= 0) break;
             }
             await db.SaveChangesAsync();
             var resp = string.Join('\n', lines) + "\n";

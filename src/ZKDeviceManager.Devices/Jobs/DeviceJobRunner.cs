@@ -248,12 +248,15 @@ public class DeviceJobRunner : BackgroundService
 
         var (delivered, completed) = await PollDeliverAsync(job, ids, $"Copying {who} to {targetDev.Name}", ct);
         job.Progress = delivered;
-        job.Message = $"Queued {ids.Count} commands to copy {who} to {targetDev.Name} ({userCmds} user record(s) + " +
-                      $"{ids.Count - userCmds} templates); {delivered} delivered" +
-                      (completed > 0 ? $", {completed} confirmed applied" : "") + ". " +
-                      (delivered >= ids.Count
-                          ? "Re-sync the target to confirm the stored counts."
-                          : "Delivery continues as the terminal polls; check the target shortly.");
+        var templateCmds = ids.Count - userCmds;
+        job.Message = $"Copy {who} to {targetDev.Name}: {userCmds} user record(s) + {templateCmds} template(s); " +
+                      $"{delivered} delivered, {completed} acknowledged by the terminal. " +
+                      (templateCmds > 0 && completed <= userCmds
+                          ? "WARNING: the terminal acknowledged no template — the fingerprints/face may NOT have "
+                            + "transferred. Re-sync the target and check its biometric counts."
+                          : delivered >= ids.Count
+                              ? "Re-sync the target to confirm the stored counts."
+                              : "Delivery continues as the terminal polls; check the target shortly.");
     }
 
     private async Task PushCreateUserAsync(SyncJob job, CancellationToken ct)
