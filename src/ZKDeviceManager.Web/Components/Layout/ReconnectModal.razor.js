@@ -14,10 +14,43 @@ function handleReconnectStateChanged(event) {
     } else if (event.detail.state === "hide") {
         reconnectModal.close();
     } else if (event.detail.state === "failed") {
-        document.addEventListener("visibilitychange", retryWhenDocumentBecomesVisible);
+        // Work out WHY we can't rejoin before nagging the user to retry: an expired sign-in
+        // should take them to the login page, not leave them on "Failed to rejoin".
+        handleLostConnection();
     } else if (event.detail.state === "rejected") {
-        location.reload();
+        handleLostConnection();
     }
+}
+
+/// Ask the server whether we're still signed in.
+///   not signed in -> session expired, go to the login page (remembering where we were)
+///   signed in     -> server is fine, the circuit is just stale, so reload to carry on
+///   unreachable   -> genuinely offline, keep the retry behaviour
+async function handleLostConnection() {
+    try {
+        const res = await fetch("/auth/ping", { cache: "no-store", credentials: "same-origin" });
+        if (res.ok) {
+            const info = await res.json();
+            if (info && info.authenticated === false) {
+                goToLogin();
+            } else {
+                location.reload();
+            }
+            return;
+        }
+        if (res.status === 401 || res.status === 403) {
+            goToLogin();
+            return;
+        }
+    } catch {
+        // server unreachable — fall through to the normal retry path
+    }
+    document.addEventListener("visibilitychange", retryWhenDocumentBecomesVisible);
+}
+
+function goToLogin() {
+    const returnUrl = location.pathname + location.search;
+    location.href = "/login?returnUrl=" + encodeURIComponent(returnUrl);
 }
 
 async function retry() {
@@ -34,7 +67,7 @@ async function retry() {
             // We'll reload the page so the user can continue using the app as quickly as possible.
             const resumeSuccessful = await Blazor.resumeCircuit();
             if (!resumeSuccessful) {
-                location.reload();
+                await handleLostConnection();
             } else {
                 reconnectModal.close();
             }
@@ -49,7 +82,7 @@ async function resume() {
     try {
         const successful = await Blazor.resumeCircuit();
         if (!successful) {
-            location.reload();
+            await handleLostConnection();
         }
     } catch {
         reconnectModal.classList.replace("components-reconnect-paused", "components-reconnect-resume-failed");

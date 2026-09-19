@@ -147,6 +147,15 @@ app.MapPost("/auth/login", async (HttpContext ctx, ZKDeviceManager.Web.Services.
     return Results.LocalRedirect(string.IsNullOrWhiteSpace(ret) ? "/" : ret);
 }).AllowAnonymous().DisableAntiforgery();
 
+// Lightweight session probe used by the reconnect UI: when a Blazor circuit can't be rejoined we need to
+// know WHY. Anonymous on purpose so it answers instead of redirecting — "authenticated:false" means the
+// sign-in cookie expired and the browser should go to /login rather than sit on "Failed to rejoin".
+app.MapGet("/auth/ping", (HttpContext ctx) =>
+{
+    ctx.Response.Headers.CacheControl = "no-store";
+    return Results.Json(new { authenticated = ctx.User?.Identity?.IsAuthenticated == true });
+}).AllowAnonymous();
+
 app.MapPost("/auth/logout", async (HttpContext ctx, IDbContextFactory<AppDbContext> dbf) =>
 {
     var user = ctx.User.Identity?.Name ?? "";
